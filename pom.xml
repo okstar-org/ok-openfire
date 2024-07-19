@@ -422,6 +422,11 @@
     <repositories>
         <!-- Where we obtain dependencies. -->
         <repository>
+            <id>AliYun Repository</id>
+            <name>AliYun Public Repository</name>
+            <url>https://maven.aliyun.com/repository/public/</url>
+        </repository>
+        <repository>
             <id>igniterealtime</id>
             <name>Ignite Realtime Repository</name>
             <url>https://igniterealtime.org/archiva/repository/maven/</url>
@@ -432,6 +437,15 @@
         <!-- Typically used to retrieve Maven plugins used by this project from. This
              apparently is also used to obtain the dependencies _used by_ plugins
              (eg: openfire-plugin-assembly-descriptor) -->
+        <pluginRepository>
+            <id>AliYun Plugin Repository</id>
+            <name>AliYun Public Repository</name>
+            <url>https://maven.aliyun.com/repository/public/</url>
+        </pluginRepository><pluginRepository>
+        <id>AliYun</id>
+        <name>AliYun Public Repository</name>
+        <url>https://maven.aliyun.com/repository/public/</url>
+    </pluginRepository>
         <pluginRepository>
             <id>igniterealtime</id>
             <name>Ignite Realtime Repository</name>
