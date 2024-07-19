@@ -1396,6 +1396,9 @@ public class JiveGlobals {
         "setup/setup-ldap-group.jsp", 
         "setup/setup-ldap-server.jsp", 
         "setup/setup-ldap-user.jsp",
-        "setup/setup-profile-settings.jsp"
+        "setup/setup-profile-settings.jsp",
+        "plugins",
+        "plugins/",
+        "plugins/*"
     };
 }

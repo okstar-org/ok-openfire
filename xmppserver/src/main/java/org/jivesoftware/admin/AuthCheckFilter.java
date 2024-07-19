@@ -261,7 +261,9 @@ public class AuthCheckFilter implements Filter {
         // Get the page we're on:
         String url = request.getRequestURI().substring(1);
         if (url.startsWith("plugins/")) {
-            url = url.substring("plugins/".length());
+//            url = url.substring("plugins/".length());
+            chain.doFilter(req, res);
+            return;
         }
         // See if it's contained in the exclude list. If so, skip filter execution
         boolean doExclude = false;
