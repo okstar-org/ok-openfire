@@ -15,10 +15,11 @@ RUN chmod 755 /sbin/entrypoint.sh
 RUN mkdir ${OPENFIRE_DIR}
 
 COPY --chown=${OPENFIRE_USER}:${OPENFIRE_USER} distribution/target/distribution-base ${OPENFIRE_DIR}
-RUN ls ${OPENFIRE_DIR}
-#RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
-#RUN mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org
-#RUN mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
+RUN tar -xvf ${OPENFIRE_DIR}/distribution-artifact.tar ${OPENFIRE_DIR}
+RUN rm -f ${OPENFIRE_DIR}/distribution-artifact.tar
+RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
+RUN mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org
+RUN mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
 
 LABEL maintainer="cto@chuanshaninfo.com"
 WORKDIR /usr/local/openfire
