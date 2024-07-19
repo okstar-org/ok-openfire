@@ -1755,7 +1755,7 @@ public class MUCRoom implements GroupEventListener, UserEventListener, Externali
         Element addresses = DocumentHelper.createElement(QName.get("addresses", "http://jabber.org/protocol/address"));
         Element address = addresses.addElement("address");
         address.addAttribute("type", "ofrom");
-        address.addAttribute("jid", role.getUserAddress().toBareJID());
+        address.addAttribute("jid", role.getUserAddress().toFullJID());
         message.addExtension(new PacketExtension(addresses));
     }
 
