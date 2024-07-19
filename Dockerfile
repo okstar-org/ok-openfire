@@ -12,8 +12,9 @@ RUN apt-get update -qq \
 
 COPY ./build/docker/entrypoint.sh /sbin/entrypoint.sh
 RUN chmod 755 /sbin/entrypoint.sh
+RUN mkdir ${OPENFIRE_DIR}
 
-COPY --chown=openfire:openfire ./distribution/target/distribution-base/ /
+COPY --chown=openfire:openfire ./distribution/target/distribution-base/distribution-artifact.tar /
 RUN tar xf /distribution-artifact.tar ${OPENFIRE_DIR}
 RUN ls ${OPENFIRE_DIR}
 RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
