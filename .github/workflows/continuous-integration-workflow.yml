@@ -462,7 +462,6 @@ jobs:
       - name: Build and push to Docker Hub
         id: docker_build
         uses: docker/build-push-action@v5
-        if: ${{ secrets.DOCKERHUB_OPENFIREIMAGE != '' }}
         with:
           context: .
           push: true
