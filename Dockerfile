@@ -13,12 +13,12 @@ RUN apt-get update -qq \
 COPY ./build/docker/entrypoint.sh /sbin/entrypoint.sh
 RUN chmod 755 /sbin/entrypoint.sh
 
-COPY --chown=openfire:openfire ./distribution/target/distribution-base /usr/local/openfire
-RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org \
-    && mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org \
-    && mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
+COPY --chown=openfire:openfire ./distribution/target/distribution-base ${OPENFIRE_DIR}
+RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
+RUN mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org
+RUN mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
 
-LABEL maintainer="florian.kinder@fankserver.com"
+LABEL maintainer="cto@chuanshaninfo.com"
 WORKDIR /usr/local/openfire
 
 EXPOSE 3478 3479 5005 5222 5223 5229 5262 5263 5275 5276 7070 7443 7777 9090 9091
