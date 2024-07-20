@@ -17,7 +17,6 @@ RUN mkdir ${OPENFIRE_DIR}
 COPY --chown=${OPENFIRE_USER}:${OPENFIRE_USER} distribution/target/distribution-base /
 RUN tar -xvf /distribution-artifact.tar -C /
 RUN mv /distribution/target/distribution-base/* ${OPENFIRE_DIR}
-RUN mv ${OPENFIRE_DIR}/distribution/* ${OPENFIRE_DIR}
 RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
 RUN mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org
 RUN mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
