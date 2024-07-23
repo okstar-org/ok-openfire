@@ -25,5 +25,5 @@ LABEL maintainer="cto@chuanshaninfo.com"
 WORKDIR /usr/local/openfire
 
 EXPOSE 3478 3479 5005 5222 5223 5229 5262 5263 5275 5276 7070 7443 7777 9090 9091
-VOLUME ["${OPENFIRE_DATA_DIR}"]
+#VOLUME ["${OPENFIRE_DATA_DIR}"]
 ENTRYPOINT [ "/sbin/entrypoint.sh" ]
