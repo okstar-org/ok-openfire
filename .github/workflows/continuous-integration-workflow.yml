@@ -438,8 +438,8 @@ jobs:
 
       - name: Extra archived distribution
         run: |
-          tar -xf distribution/target/distribution-artifact.tar -C /
-          mv /distribution/* distribution/target/distribution-base
+          tar -xf distribution/target/distribution-artifact.tar
+          mv distribution/* distribution/target/distribution-base
           ls distribution/target/distribution-base
 
       - name: Fix file permissions
