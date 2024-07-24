@@ -434,13 +434,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: distribution-java11
-          path: distribution/target/
+          path: .
 
       - name: Extra archived distribution
         run: |
-          mkdir tmp
-          tar -xf distribution/target/distribution-artifact.tar -C tmp
-          mv tmp/distribution/distribution-base/* distribution/target/distribution-base
+          tar -xf distribution-artifact.tar -C .
           ls distribution/target/distribution-base
 
       - name: Fix file permissions
