@@ -434,7 +434,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: distribution-java11
-          path: distribution/target/distribution-base
+          path: distribution/target/
+
+      - name: Extra archived distribution
+        run: tar -xf distribution/target/distribution-artifact.tar -C distribution/target/distribution-base
 
       - name: Fix file permissions
         run: find . -type f -name '*.sh' -exec chmod +x {} \;

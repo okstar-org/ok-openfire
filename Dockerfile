@@ -1,8 +1,9 @@
 FROM openjdk:11-jre
+LABEL maintainer="cto@chuanshaninfo.com"
 
 ENV OPENFIRE_USER=openfire \
     OPENFIRE_DIR=/usr/local/openfire \
-    OPENFIRE_DATA_DIR=/var/lib/openfire \
+    OPENFIRE_DATA_DIR=/home/openfire \
     OPENFIRE_LOG_DIR=/var/log/openfire
 
 RUN apt-get update -qq \
@@ -10,21 +11,22 @@ RUN apt-get update -qq \
     && adduser --disabled-password --quiet --system --home $OPENFIRE_DATA_DIR --gecos "Openfire XMPP server" --group $OPENFIRE_USER \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./build/docker/entrypoint.sh /sbin/entrypoint.sh
-RUN chmod 755 /sbin/entrypoint.sh
 RUN mkdir ${OPENFIRE_DIR}
-
-COPY distribution/target/distribution-base /
-RUN tar -xvf /distribution-artifact.tar -C /
-RUN mv /distribution/target/distribution-base/* ${OPENFIRE_DIR}
 RUN chown -R ${OPENFIRE_USER}:${OPENFIRE_USER} ${OPENFIRE_DIR}
+RUN mkdir ${OPENFIRE_LOG_DIR}
+RUN chown -R ${OPENFIRE_USER}:${OPENFIRE_USER} ${OPENFIRE_LOG_DIR}
+
+WORKDIR ${OPENFIRE_DIR}
+
+COPY distribution/target/distribution-base ${OPENFIRE_DIR}
+
 RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
 RUN mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org
 RUN mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
 
-LABEL maintainer="cto@chuanshaninfo.com"
-WORKDIR /usr/local/openfire
-
 EXPOSE 3478 3479 5005 5222 5223 5229 5262 5263 5275 5276 7070 7443 7777 9090 9091
-VOLUME ["${OPENFIRE_DATA_DIR}"]
+VOLUME ["${OPENFIRE_DATA_DIR}", "${OPENFIRE_LOG_DIR}"]
+
+COPY ./build/docker/entrypoint.sh /sbin/entrypoint.sh
+RUN chmod 755 /sbin/entrypoint.sh
 ENTRYPOINT [ "/sbin/entrypoint.sh" ]
