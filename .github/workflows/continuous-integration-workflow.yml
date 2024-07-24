@@ -438,6 +438,7 @@ jobs:
 
       - name: Extra archived distribution
         run: |
+          mkdir tmp
           tar -xf distribution/target/distribution-artifact.tar -C tmp
           mv tmp/distribution/* distribution/target/distribution-base
           ls distribution/target/distribution-base
