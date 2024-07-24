@@ -14,9 +14,10 @@ COPY ./build/docker/entrypoint.sh /sbin/entrypoint.sh
 RUN chmod 755 /sbin/entrypoint.sh
 RUN mkdir ${OPENFIRE_DIR}
 
-COPY --chown=${OPENFIRE_USER}:${OPENFIRE_USER} distribution/target/distribution-base /
+COPY distribution/target/distribution-base /
 RUN tar -xvf /distribution-artifact.tar -C /
 RUN mv /distribution/target/distribution-base/* ${OPENFIRE_DIR}
+RUN chown -R ${OPENFIRE_USER}:${OPENFIRE_USER} ${OPENFIRE_DIR}
 RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org
 RUN mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org
 RUN mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
@@ -25,5 +26,5 @@ LABEL maintainer="cto@chuanshaninfo.com"
 WORKDIR /usr/local/openfire
 
 EXPOSE 3478 3479 5005 5222 5223 5229 5262 5263 5275 5276 7070 7443 7777 9090 9091
-#VOLUME ["${OPENFIRE_DATA_DIR}"]
+VOLUME ["${OPENFIRE_DATA_DIR}"]
 ENTRYPOINT [ "/sbin/entrypoint.sh" ]
