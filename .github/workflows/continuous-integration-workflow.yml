@@ -437,7 +437,9 @@ jobs:
           path: distribution/target/
 
       - name: Extra archived distribution
-        run: tar -xf distribution/target/distribution-artifact.tar -C distribution/target/distribution-base
+        run: |
+          tar -xf distribution/target/distribution-artifact.tar -C distribution/target/distribution-base
+          ls distribution/target/distribution-base
 
       - name: Fix file permissions
         run: find . -type f -name '*.sh' -exec chmod +x {} \;
