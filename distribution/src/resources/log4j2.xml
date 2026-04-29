@@ -23,18 +23,19 @@
 
     <Loggers>
         <!-- OF-1095: Uniform output of loading/unloading of plugins to std-out. -->
-        <Logger name="org.jivesoftware.openfire.container.PluginManager">
-            <AppenderRef ref="console"/>
-        </Logger>
-        <Logger name="org.jivesoftware.openfire.container.PluginMonitor">
-            <AppenderRef ref="console"/>
-        </Logger>
+<!--        <Logger name="org.jivesoftware.openfire.container.PluginManager">-->
+<!--            <AppenderRef ref="console"/>-->
+<!--        </Logger>-->
+<!--        <Logger name="org.jivesoftware.openfire.container.PluginMonitor">-->
+<!--            <AppenderRef ref="console"/>-->
+<!--        </Logger>-->
 
         <!-- OF-506: Jetty INFO messages are generally not useful. Ignore them by default. -->
         <Logger name="org.eclipse.jetty" level="warn"/>
 
         <Root level="info">
             <AppenderRef ref="openfire"/>
+            <AppenderRef ref="console"/>
         </Root>
     </Loggers>
 </Configuration>

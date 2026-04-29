@@ -361,6 +361,8 @@ public class XMPPServer {
     }
 
     private void initialize() throws FileNotFoundException {
+        logger.info("Initialize the openfire...");
+
         locateOpenfire();
 
         if ("true".equals(JiveGlobals.getXMLProperty("setup"))) {
@@ -657,6 +659,8 @@ public class XMPPServer {
 
     public void start() {
         try {
+            logger.info("The openfire is starting...");
+
             initialize();
 
             // Create PluginManager now (but don't start it) so that modules may use it
@@ -1062,17 +1066,21 @@ public class XMPPServer {
      * @throws FileNotFoundException If jiveHome could not be located
      */
     private void locateOpenfire() throws FileNotFoundException {
+        logger.info("Locate openfire dir...");
+
         final String configName = "conf" + File.separator + "openfire.xml";
         final String[] extensions = new String[] {
             "", // no extension
             ".tmp" // For when Openfire was shutdown uncleanly. See OF-2594.
         };
+
         for (final String extension : extensions) {
             final String jiveConfigName = configName + extension;
 
             // First, try to load it openfireHome as a system property.
             if (openfireHome == null) {
                 String homeProperty = System.getProperty("openfireHome");
+                logger.info("Get `openfireHome={}` from system properties", homeProperty);
                 try {
                     if (homeProperty != null) {
                         openfireHome = verifyHome(homeProperty, jiveConfigName);

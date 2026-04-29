@@ -195,7 +195,7 @@ public class AdminConsolePlugin implements Plugin {
             final HttpConfiguration httpConfig = new HttpConfiguration();
 
             // Do not send Jetty info in HTTP headers
-            httpConfig.setSendServerVersion( false );
+            httpConfig.setSendServerVersion(false);
             configureProxiedConnector(httpConfig);
 
             final ServerConnector httpConnector = new ServerConnector(adminServer, null, null, null, -1, serverThreads, new HttpConnectionFactory(httpConfig));
@@ -211,41 +211,36 @@ public class AdminConsolePlugin implements Plugin {
         sslEnabled = false;
         try {
             IdentityStore identityStore = null;
-            if (XMPPServer.getInstance().getCertificateStoreManager() == null){
-                Log.warn( "Admin console: CertificateStoreManager has not been initialized yet. HTTPS will be unavailable." );
+            if (XMPPServer.getInstance().getCertificateStoreManager() == null) {
+                Log.warn("Admin console: CertificateStoreManager has not been initialized yet. HTTPS will be unavailable.");
             } else {
-                identityStore = XMPPServer.getInstance().getCertificateStoreManager().getIdentityStore( ConnectionType.WEBADMIN );
+                identityStore = XMPPServer.getInstance().getCertificateStoreManager().getIdentityStore(ConnectionType.WEBADMIN);
             }
-            if (identityStore != null && adminSecurePort > 0 )
-            {
-                if ( identityStore.getAllCertificates().isEmpty() )
-                {
-                    Log.warn( "Admin console: Identity store does not have any certificates. HTTPS will be unavailable." );
-                }
-                else
-                {
-                    if ( !identityStore.containsDomainCertificate() )
-                    {
-                        Log.warn( "Admin console: Using certificates but they are not valid for the hosted domain" );
+            if (identityStore != null && adminSecurePort > 0) {
+                if (identityStore.getAllCertificates().isEmpty()) {
+                    Log.warn("Admin console: Identity store does not have any certificates. HTTPS will be unavailable.");
+                } else {
+                    if (!identityStore.containsDomainCertificate()) {
+                        Log.warn("Admin console: Using certificates but they are not valid for the hosted domain");
                     }
 
                     final ConnectionManager connectionManager = XMPPServer.getInstance().getConnectionManager();
-                    final ConnectionConfiguration configuration = connectionManager.getListener( ConnectionType.WEBADMIN, true ).generateConnectionConfiguration();
-                    final SslContextFactory.Server sslContextFactory = new EncryptionArtifactFactory( configuration ).getSslContextFactory();
+                    final ConnectionConfiguration configuration = connectionManager.getListener(ConnectionType.WEBADMIN, true).generateConnectionConfiguration();
+                    final SslContextFactory.Server sslContextFactory = new EncryptionArtifactFactory(configuration).getSslContextFactory();
 
                     final HttpConfiguration httpsConfig = new HttpConfiguration();
-                    httpsConfig.setSendServerVersion( false );
-                    httpsConfig.setSecureScheme( "https" );
-                    httpsConfig.setSecurePort( adminSecurePort );
+                    httpsConfig.setSendServerVersion(false);
+                    httpsConfig.setSecureScheme("https");
+                    httpsConfig.setSecurePort(adminSecurePort);
                     SecureRequestCustomizer secureRequestCustomizer = new SecureRequestCustomizer();
                     secureRequestCustomizer.setSniHostCheck(sslContextFactory.isSniRequired());
-                    httpsConfig.addCustomizer( secureRequestCustomizer );
+                    httpsConfig.addCustomizer(secureRequestCustomizer);
                     configureProxiedConnector(httpsConfig);
 
-                    final HttpConnectionFactory httpConnectionFactory = new HttpConnectionFactory( httpsConfig );
-                    final SslConnectionFactory sslConnectionFactory = new SslConnectionFactory( sslContextFactory, org.eclipse.jetty.http.HttpVersion.HTTP_1_1.toString() );
+                    final HttpConnectionFactory httpConnectionFactory = new HttpConnectionFactory(httpsConfig);
+                    final SslConnectionFactory sslConnectionFactory = new SslConnectionFactory(sslContextFactory, org.eclipse.jetty.http.HttpVersion.HTTP_1_1.toString());
 
-                    final ServerConnector httpsConnector = new ServerConnector( adminServer, null, null, null, -1, serverThreads, sslConnectionFactory, httpConnectionFactory );
+                    final ServerConnector httpsConnector = new ServerConnector(adminServer, null, null, null, -1, serverThreads, sslConnectionFactory, httpConnectionFactory);
                     final String bindInterface = getBindInterface();
                     httpsConnector.setHost(bindInterface);
                     httpsConnector.setPort(adminSecurePort);
@@ -254,10 +249,8 @@ public class AdminConsolePlugin implements Plugin {
                     sslEnabled = true;
                 }
             }
-        }
-        catch ( Exception e )
-        {
-            Log.error( "An exception occurred while trying to make available the admin console via HTTPS.", e );
+        } catch (Exception e) {
+            Log.error("An exception occurred while trying to make available the admin console via HTTPS.", e);
         }
 
         // Make sure that at least one connector was registered.
@@ -272,21 +265,21 @@ public class AdminConsolePlugin implements Plugin {
 
         HandlerCollection collection = new HandlerCollection();
         adminServer.setHandler(collection);
-        collection.setHandlers(new Handler[] { contexts, new DefaultHandler() });
+        collection.setHandlers(new Handler[]{contexts, new DefaultHandler()});
 
         try {
             adminServer.start(); // excludes initialised
-
-            if(XMPPServer.getInstance().isSetupMode()) {
-                AuthCheckFilter.loadSetupExcludes();
-            }
-
-            // Log the ports that the admin server is listening on.
-            logAdminConsolePorts();
+        } catch (Exception e) {
+            Log.error("Admin server start failed: {}", e.getMessage());
+            throw new RuntimeException(e);
         }
-        catch (Exception e) {
-            Log.error("Could not start admin console server", e);
+
+        if (XMPPServer.getInstance().isSetupMode()) {
+            AuthCheckFilter.loadSetupExcludes();
         }
+
+        // Log the ports that the admin server is listening on.
+        logAdminConsolePorts();
     }
 
     private void deleteLegacyWebInfLibFolder() {
@@ -317,9 +310,9 @@ public class AdminConsolePlugin implements Plugin {
             try {
                 Files.move(libFolder, libFolder.resolveSibling(backupFileName));
             } catch (final IOException e) {
-               Log.warn("Exception attempting to delete folder, will retry shortly", e);
+                Log.warn("Exception attempting to delete folder, will retry shortly", e);
             }
-            if(Files.exists(libFolder)) {
+            if (Files.exists(libFolder)) {
                 try {
                     Thread.sleep(1000);
                 } catch (final InterruptedException e) {
@@ -348,7 +341,8 @@ public class AdminConsolePlugin implements Plugin {
 
     /**
      * Shuts down the Jetty server.
-     * */
+     *
+     */
     protected void shutdown() {
         // Remove listener for certificate events
         if (certificateListener != null) {
@@ -358,16 +352,15 @@ public class AdminConsolePlugin implements Plugin {
             if (adminServer != null && adminServer.isRunning()) {
                 adminServer.stop();
             }
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             Log.error("Error stopping admin console server", e);
         }
 
-        if (contexts != null ) {
+        if (contexts != null) {
             try {
                 contexts.stop();
                 contexts.destroy();
-            } catch ( Exception e ) {
+            } catch (Exception e) {
                 Log.error("Error stopping admin console server", e);
             }
         }
@@ -440,10 +433,9 @@ public class AdminConsolePlugin implements Plugin {
         String bindInterface = null;
         if (adminInterfaceName != null && adminInterfaceName.trim().length() > 0) {
             bindInterface = adminInterfaceName;
-        }
-        else if (globalInterfaceName != null && globalInterfaceName.trim().length() > 0) {
+        } else if (globalInterfaceName != null && globalInterfaceName.trim().length() > 0) {
             bindInterface = globalInterfaceName;
-         }
+        }
         return bindInterface;
     }
 
@@ -495,8 +487,7 @@ public class AdminConsolePlugin implements Plugin {
         try {
             shutdown();
             startup();
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             Log.error("An exception occurred while restarting the admin console:", e);
         }
     }
@@ -535,24 +526,23 @@ public class AdminConsolePlugin implements Plugin {
     }
 
     private void log(String string) {
-       Log.info(string);
-       System.out.println(string);
+        Log.info(string);
+        System.out.println(string);
     }
 
     private void logAdminConsolePorts() {
         // Log what ports the admin console is running on.
         String listening = LocaleUtils.getLocalizedString("admin.console.listening");
         String hostname = getBindInterface() == null ?
-                XMPPServer.getInstance().getServerInfo().getXMPPDomain() :
-                getBindInterface();
+            XMPPServer.getInstance().getServerInfo().getXMPPDomain() :
+            getBindInterface();
         boolean isPlainStarted = false;
         boolean isEncryptedStarted = false;
 
         for (Connector connector : adminServer.getConnectors()) {
             if (((ServerConnector) connector).getPort() == adminPort) {
                 isPlainStarted = true;
-            }
-            else if (((ServerConnector) connector).getPort() == adminSecurePort) {
+            } else if (((ServerConnector) connector).getPort() == adminSecurePort) {
                 isEncryptedStarted = true;
             }
 
@@ -560,15 +550,13 @@ public class AdminConsolePlugin implements Plugin {
 
         if (isPlainStarted && isEncryptedStarted) {
             log(listening + ":" + System.getProperty("line.separator") +
-                    "  http://" + hostname + ":" +
-                    adminPort + System.getProperty("line.separator") +
-                    "  https://" + hostname + ":" +
-                    adminSecurePort);
-        }
-        else if (isEncryptedStarted) {
+                "  http://" + hostname + ":" +
+                adminPort + System.getProperty("line.separator") +
+                "  https://" + hostname + ":" +
+                adminSecurePort);
+        } else if (isEncryptedStarted) {
             log(listening + " https://" + hostname + ":" + adminSecurePort);
-        }
-        else if (isPlainStarted) {
+        } else if (isPlainStarted) {
             log(listening + " http://" + hostname + ":" + adminPort);
         }
     }
@@ -587,7 +575,7 @@ public class AdminConsolePlugin implements Plugin {
         reenableTask = new TimerTask() {
             @Override
             public void run() {
-                 setAutoRestartEnabled(true);
+                setAutoRestartEnabled(true);
             }
         };
 
@@ -617,8 +605,7 @@ public class AdminConsolePlugin implements Plugin {
     private class CertificateListener implements CertificateEventListener {
 
         @Override
-        public void storeContentChanged( CertificateStore store )
-        {
+        public void storeContentChanged(CertificateStore store) {
             if (autoRestartEnabled) {
                 Log.info("Automatically restarting plugin. Certificate changes detected.");
                 restart();

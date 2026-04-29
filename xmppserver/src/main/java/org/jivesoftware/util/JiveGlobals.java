@@ -51,7 +51,7 @@ public class JiveGlobals {
     private static final Logger Log = LoggerFactory.getLogger(JiveGlobals.class);
 
     private static String JIVE_CONFIG_FILENAME = "conf" + File.separator + "openfire.xml";
-    
+
     private static final String JIVE_SECURITY_FILENAME = "conf" + File.separator + "security.xml";
     private static final String ENCRYPTED_PROPERTY_NAME_PREFIX = "encrypt.";
     private static final String ENCRYPTED_PROPERTY_NAMES = ENCRYPTED_PROPERTY_NAME_PREFIX + "property.name";
@@ -79,7 +79,7 @@ public class JiveGlobals {
     private static DateFormat dateFormat = null;
     private static DateFormat dateTimeFormat = null;
     private static DateFormat timeFormat = null;
-    
+
     private static Encryptor propertyEncryptor = null;
     private static Encryptor propertyEncryptorNew = null;
     private static String currentKey = null;
@@ -270,9 +270,14 @@ public class JiveGlobals {
      * @return the location of the home dir.
      */
     public static Path getHomePath() {
-        if (openfireProperties == null) {
-            loadOpenfireProperties();
-        }
+        if(home != null)
+            return home;
+
+        loadOpenfireProperties();
+
+        if(home == null)
+            throw new IllegalStateException("The home is not be initialized!");
+
         return home;
     }
 
@@ -297,6 +302,8 @@ public class JiveGlobals {
      * @param homeDir the location of the home dir.
      */
     public static void setHomePath(Path homeDir) {
+        Log.info("Set home path: {}", homeDir);
+
         // Do a permission check on the new home directory
         if (!Files.exists(homeDir) || !Files.isDirectory(homeDir)) {
             Log.error("Error - the specified home directory does not exist or is not a directory (" + homeDir + ")");
@@ -308,6 +315,7 @@ public class JiveGlobals {
         }
         else {
             home = homeDir.normalize().toAbsolutePath();
+            Log.info("The home is set: {}", home);
         }
     }
 
@@ -413,7 +421,7 @@ public class JiveGlobals {
      * </pre>
      *
      * If the specified property can't be found, the {@code defaultValue} will be returned.
-     * If the property is found, it will be parsed using {@link Boolean#valueOf(String)}.  
+     * If the property is found, it will be parsed using {@link Boolean#valueOf(String)}.
      *
      * @param name the name of the property to return.
      * @param defaultValue value returned if the property could not be loaded or was not
@@ -1004,17 +1012,17 @@ public class JiveGlobals {
         }
         openfireProperties.migrateProperty(name);
     }
-    
+
     /**
      * Flags certain properties as being sensitive, based on
      * property naming conventions. Values for matching property
      * names are hidden from the Openfire console.
-     * 
+     *
      * @param name The name of the property
      * @return True if the property is considered sensitive, otherwise false
      */
     public static boolean isPropertySensitive(String name) {
-        
+
         return name != null && (
             name.toLowerCase().contains("passwd") ||
                 name.toLowerCase().contains("password") ||
@@ -1041,7 +1049,7 @@ public class JiveGlobals {
 
     /**
      * Determines whether a property is configured for encryption.
-     * 
+     *
      * @param name
      *            The name of the property
      * @return {@code true} if the property is stored using encryption, otherwise {@code false}
@@ -1058,7 +1066,7 @@ public class JiveGlobals {
 
     /**
      * Set the encryption status for the given property.
-     * 
+     *
      * @param name The name of the property
      * @param encrypt True to encrypt the property, false to decrypt
      * @return True if the property's encryption status changed, otherwise false
@@ -1075,7 +1083,7 @@ public class JiveGlobals {
 
     /**
      * Fetches the property encryptor.
-     * 
+     *
      * @param useNewEncryptor Should use the new encryptor
      * @return The property encryptor
      */
@@ -1099,10 +1107,10 @@ public class JiveGlobals {
     public static Encryptor getPropertyEncryptor() {
         return getPropertyEncryptor(false);
     }
-    
+
     /**
      * This method is called early during the setup process to
-     * set the algorithm for encrypting property values 
+     * set the algorithm for encrypting property values
      * @param alg the algorithm used to encrypt properties
      */
     public static void setupPropertyEncryptionAlgorithm(String alg) {
@@ -1120,7 +1128,7 @@ public class JiveGlobals {
             securityProperties.setProperty(ENCRYPTION_ALGORITHM, ENCRYPTION_ALGORITHM_BLOWFISH);
         }
     }
-    
+
     /**
      * This method is called early during the setup process to
      * set a custom key for encrypting property values
@@ -1172,7 +1180,7 @@ public class JiveGlobals {
 
     /**
      * Re-encrypted with a new key and new algorithm configuration
-     * 
+     *
      * @param newAlg new algorithm type
      * @param newKey new encryptor key
      */
@@ -1184,7 +1192,7 @@ public class JiveGlobals {
         //create the new encryptor
         currentKey = newKey.isEmpty() ? null : newKey;
         propertyEncryptorNew = getEncryptor(newAlg, newKey);
-        
+
         // Use new key to update configuration properties
         Iterator<Entry<String, String>> iterator = properties.entrySet().iterator();
         Entry<String, String> entry;
@@ -1217,6 +1225,7 @@ public class JiveGlobals {
     * @param configName the name of the config file.
     */
     public static void setConfigName(String configName) {
+        Log.info("Set config name: {}", configName);
         JIVE_CONFIG_FILENAME = configName;
     }
 
@@ -1294,7 +1303,7 @@ public class JiveGlobals {
                     openfireProperties = XMLProperties.getNonPersistedInstance();
                 } catch (IOException e) {
                     Log.error("Failed to setup default openfire properties", e);
-                }            	
+                }
             }
         }
     }
@@ -1303,7 +1312,7 @@ public class JiveGlobals {
      * Lazy-loads the security configuration properties.
      */
     private synchronized static void loadSecurityProperties() {
-        
+
         if (securityProperties == null) {
             // If home is null then log that the application will not work correctly
             if (home == null) {
@@ -1339,23 +1348,23 @@ public class JiveGlobals {
                     securityProperties = XMLProperties.getNonPersistedInstance();
                 } catch (IOException e) {
                     Log.error("Failed to setup default security properties", e);
-                }            	
+                }
             }
         }
     }
-    
+
     /**
      * Setup the property encryption key, rewriting encrypted values as appropriate
      */
     private static void setupPropertyEncryption() {
-        
+
         // get/set the current encryption key
         currentKey = getCurrentKey();
-        
+
         // check to see if a new key has been defined
         String newKey = securityProperties.getProperty(ENCRYPTION_KEY_NEW, false);
         if (newKey != null) {
-            
+
             Log.info("Detected new encryption key; updating encrypted properties");
 
             // if a new key has been provided, check to see if the old key matches 
@@ -1375,26 +1384,26 @@ public class JiveGlobals {
 
             String oldAlg = securityProperties.getProperty(ENCRYPTION_ALGORITHM);
             updateEncryptionProperties(oldAlg, newKey);
-            
+
             securityProperties.deleteProperty(ENCRYPTION_KEY_NEW);
             securityProperties.deleteProperty(ENCRYPTION_KEY_OLD);
         }
-    
+
         // (re)write the encryption key to the security XML file
         securityProperties.setProperty(ENCRYPTION_KEY_CURRENT, new AesEncryptor().encrypt(currentKey));
     }
 
     public static final String[] setupExcludePaths = {
-        "setup/index.jsp", 
-        "setup/setup-admin-settings.jsp", 
-        "setup/setup-completed.jsp", 
-        "setup/setup-datasource-jndi.jsp", 
-        "setup/setup-datasource-settings.jsp", 
-        "setup/setup-datasource-standard.jsp", 
+        "setup/index.jsp",
+        "setup/setup-admin-settings.jsp",
+        "setup/setup-completed.jsp",
+        "setup/setup-datasource-jndi.jsp",
+        "setup/setup-datasource-settings.jsp",
+        "setup/setup-datasource-standard.jsp",
         "setup/setup-finished.jsp",
-        "setup/setup-host-settings.jsp", 
-        "setup/setup-ldap-group.jsp", 
-        "setup/setup-ldap-server.jsp", 
+        "setup/setup-host-settings.jsp",
+        "setup/setup-ldap-group.jsp",
+        "setup/setup-ldap-server.jsp",
         "setup/setup-ldap-user.jsp",
         "setup/setup-profile-settings.jsp",
         "plugins",

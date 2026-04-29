@@ -2,6 +2,7 @@
 set -e
 
 rewire_openfire() {
+  echo "Rewire openfire..."
   rm -rf ${OPENFIRE_DIR}/{conf,resources/security}
   ln -sf ${OPENFIRE_DATA_DIR}/conf ${OPENFIRE_DIR}/
   ln -sf ${OPENFIRE_DATA_DIR}/plugins ${OPENFIRE_DIR}/
@@ -56,6 +57,8 @@ if [[ ${1:0:1} = '-' ]]; then
   EXTRA_ARGS="$@"
   set --
 fi
+
+echo "Openfire entrypoint is executing..."
 
 rewire_openfire
 initialize_data_dir
