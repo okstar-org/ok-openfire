@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2024 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -490,7 +490,11 @@ public abstract class StanzaHandler {
         document.getRootElement().add(features);
 
         // Include available SASL Mechanisms
-        features.add(SASLAuthentication.getSASLMechanisms(session));
+        final Element mechanismsElement=SASLAuthentication.getSASLMechanisms(session);
+        if (mechanismsElement!=null) {
+        	features.add(mechanismsElement);
+        }
+
         // Include specific features such as auth and register for client sessions
         final List<Element> specificFeatures = session.getAvailableStreamFeatures();
         if (specificFeatures != null) {
@@ -627,17 +631,6 @@ public abstract class StanzaHandler {
         stream.addAttribute("version", Session.MAJOR_VERSION + "." + Session.MINOR_VERSION);
 
         return document;
-    }
-
-    /**
-     * Close the connection since TLS was mandatory and the entity never negotiated TLS. Before
-     * closing the connection a stream error will be sent to the entity.
-     *
-     * @deprecated Renamed. Use {@link #closeNeverEncryptedConnection()}
-     */
-    @Deprecated // remove in Openfire 4.9 or later.
-    protected void closeNeverSecuredConnection() {
-        closeNeverEncryptedConnection();
     }
 
     /**
