@@ -1,4 +1,4 @@
-FROM openjdk:11-jre
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/eclipse-temurin:11-jdk
 LABEL maintainer="cto@chuanshaninfo.com"
 
 ENV OPENFIRE_USER=openfire \
