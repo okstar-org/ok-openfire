@@ -1,6 +1,6 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
-  - Copyright (C) 2017-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -32,16 +32,9 @@
 <% webManager.init(request, response, session, application, out ); %>
 
 <%
-    boolean downloadRequested = request.getParameter("download") != null;
-    String url = request.getParameter("url");
     Cookie csrfCookie = CookieUtils.getCookie(request, "csrf");
     String csrfParam = ParamUtils.getParameter(request, "csrf");
 
-    if (downloadRequested) {
-        if (csrfCookie == null || csrfParam == null || !csrfCookie.getValue().equals(csrfParam)) {
-            downloadRequested = false;
-        }
-    }
     csrfParam = StringUtils.randomString(15);
     CookieUtils.setCookie(request, response, "csrf", csrfParam, -1);
     pageContext.setAttribute("csrf", csrfParam);
@@ -53,14 +46,6 @@
     pageContext.setAttribute( "lastCheck", value != null ? new Date( Long.parseLong( value ) ) : null );
     pageContext.setAttribute( "updateServiceEnabled", updateManager.isServiceEnabled() );
     pageContext.setAttribute( "notInstalledPlugins", updateManager.getNotInstalledPlugins() );
-
-    if (downloadRequested) {
-        // Download and install new plugin
-        updateManager.downloadPlugin(url);
-        // Log the event
-        webManager.logEvent("downloaded new plugin from "+url, null);
-    }
-
 %>
 
 <html>
@@ -114,6 +99,10 @@
     padding: 5px;
 }
 
+.regular:hover {
+    background-color: white;
+}
+
 .line-bottom-border {
     font-family: verdana, arial, helvetica, sans-serif;
     font-size: 9pt;
@@ -140,7 +129,7 @@
     }
 
     function startDownload(url, version, id) {
-        downloader.installPlugin(url, version, id, downloadComplete);
+        downloader.installPlugin('${admin:escapeHTMLTags(webManager.user.username).replaceAll("'", "&quot;")}', url, version, id, downloadComplete);
     }
 
     function downloadComplete(status) {
@@ -240,8 +229,7 @@
                     <thead>
                         <tr style="background:#eee;">
                             <td class="table-header-left">&nbsp;</td>
-                            <td nowrap colspan="2" class="table-header"><fmt:message key="plugin.available.open_source"/></td>
-                            <td nowrap class="table-header"><fmt:message key="plugin.available.description"/></td>
+                            <td class="table-header"><fmt:message key="plugin.available.name"/></td>
                             <td nowrap class="table-header"><fmt:message key="plugin.available.version"/></td>
                             <td nowrap class="table-header"><fmt:message key="plugin.available.author"/></td>
                             <td nowrap class="table-header"><fmt:message key="plugin.available.file_size"/></td>
@@ -252,13 +240,13 @@
                         <c:choose>
                             <c:when test="${empty notInstalledPlugins}">
                                 <tr>
-                                    <td colspan="8" style="text-align: center"><fmt:message key="plugin.available.no_plugin"/></td>
+                                    <td colspan="6" style="text-align: center"><fmt:message key="plugin.available.no_plugin"/></td>
                                 </tr>
                             </c:when>
                             <c:otherwise>
                                 <c:forEach items="${notInstalledPlugins}" var="notInstalledPlugin">
-                                    <tr id="${notInstalledPlugin.hashCode}">
-                                        <td style="width: 1%" class="line-bottom-border">
+                                    <tr class="regular" id="${notInstalledPlugin.hashCode}">
+                                        <td class="line-bottom-border" style="width: 1%">
                                             <c:choose>
                                                 <c:when test="${not empty notInstalledPlugin.icon}">
                                                     <img src="${fn:escapeXml(notInstalledPlugin.icon)}" width="16" height="16" alt="Plugin">
@@ -268,41 +256,43 @@
                                                 </c:otherwise>
                                             </c:choose>
                                         </td>
-                                        <td style="width: 20%" nowrap class="line-bottom-border">
+                                        <td class="line-bottom-border" style="width: 60%;">
                                             <c:if test="${not empty notInstalledPlugin.name}">
-                                                <c:out value="${notInstalledPlugin.name}"/>
+                                                <b><c:out value="${notInstalledPlugin.name}"/></b><br/>
                                             </c:if>
-                                        </td>
-                                        <td nowrap class="line-bottom-border">
-                                            <c:if test="${not empty notInstalledPlugin.readme}">
-                                                <a href="${fn:escapeXml(notInstalledPlugin.readme)}"><img src="images/doc-readme-16x16.gif" alt="README"></a>
-                                            </c:if>
-                                            <c:if test="${not empty notInstalledPlugin.changelog}">
-                                                <a href="${fn:escapeXml(notInstalledPlugin.changelog)}"><img src="images/doc-changelog-16x16.gif" alt="changelog"></a>
-                                            </c:if>
-                                        </td>
-                                        <td style="width: 60%" class="line-bottom-border">
                                             <c:if test="${not empty notInstalledPlugin.description}">
-                                                <c:out value="${notInstalledPlugin.description}"/>
+                                                <c:out value="${notInstalledPlugin.description}"/><br/>
+                                            </c:if>
+                                            <c:if test="${not empty notInstalledPlugin.readme}">
+                                                <a href="${fn:escapeXml(notInstalledPlugin.readme)}"
+                                                    target="_blank">
+                                                    <fmt:message key="plugin.admin.documentation" />
+                                                </a>
                                             </c:if>
                                         </td>
-                                        <td style="width: 5%" nowrap class="line-bottom-border">
+                                        <td class="line-bottom-border" style="width: 10%; white-space: nowrap;">
                                             <c:if test="${not empty notInstalledPlugin.version}">
-                                                <c:out value="${notInstalledPlugin.version}"/>
+                                                <c:out value="${notInstalledPlugin.version}"/><br/>
                                             </c:if>
                                             <c:if test="${not empty notInstalledPlugin.releaseDate}">
-                                                <br><c:out value="${notInstalledPlugin.releaseDate}"/>
+                                                <c:out value="${notInstalledPlugin.releaseDate}"/><br/>
+                                            </c:if>
+                                            <c:if test="${not empty notInstalledPlugin.changelog}">
+                                                <a href="${fn:escapeXml(notInstalledPlugin.changelog)}"
+                                                    target="_blank">
+                                                    <fmt:message key="plugin.admin.changelog" />
+                                                </a>
                                             </c:if>
                                         </td>
-                                        <td style="width: 15%" nowrap class="line-bottom-border">
+                                        <td class="line-bottom-border" style="width: 10%;">
                                             <c:if test="${not empty notInstalledPlugin.author}">
                                                 <c:out value="${notInstalledPlugin.author}"/>
                                             </c:if>
                                         </td>
-                                        <td style="width: 15%; text-align: right" nowrap class="line-bottom-border">
+                                        <td class="line-bottom-border" style="width: 5%; white-space: nowrap; text-align: right;">
                                             <c:out value="${admin:byteFormat( notInstalledPlugin.fileSize )}"/>
                                         </td>
-                                        <td style="width: 1%; text-align: center" class="line-bottom-border">
+                                        <td class="line-bottom-border" style="width: 1%; text-align: center;">
                                             <a href="javascript:downloadPlugin('${fn:escapeXml(notInstalledPlugin.downloadURL)}', '${notInstalledPlugin.version}', '${notInstalledPlugin.hashCode}')">
                                                 <span id="${notInstalledPlugin.hashCode}-image">
                                                     <img src="images/add-16x16.gif" alt="<fmt:message key="plugin.available.download" />">
@@ -314,7 +304,7 @@
                                         <td style="width: 1%" class="line-bottom-border">
                                             <img src="${fn:escapeXml(notInstalledPlugin.icon)}" width="16" height="16" alt=""/>
                                         </td>
-                                        <td colspan="6" nowrap class="line-bottom-border">${admin:escapeHTMLTags(notInstalledPlugin.name)} <fmt:message key="plugin.available.installation.success" /></td>
+                                        <td colspan="4" nowrap class="line-bottom-border">${admin:escapeHTMLTags(notInstalledPlugin.name)} <fmt:message key="plugin.available.installation.success" /></td>
                                         <td class="line-bottom-border" style="text-align: center">
                                             <img src="images/success-16x16.gif" alt=""/>
                                         </td>

@@ -401,7 +401,7 @@ public class XMPPPacketReader {
                         parent.addCDATA(text);
                     }
                     else {
-                        if (text.trim().length() > 0) {
+                        if (!text.trim().isEmpty()) {
                             throw new DocumentException("Cannot have text content outside of the root document");
                         }
                     }
@@ -414,7 +414,7 @@ public class XMPPPacketReader {
                         parent.addText(text);
                     }
                     else {
-                        if (text.trim().length() > 0) {
+                        if (!text.trim().isEmpty()) {
                             throw new DocumentException("Cannot have an entityref outside of the root document");
                         }
                     }
@@ -437,7 +437,7 @@ public class XMPPPacketReader {
                         dropNamespace = true;
                         for (Element el = parent; el != null; el = el.getParent()) {
                             final String defaultNS = el.getNamespaceForPrefix("").getURI();
-                            if (defaultNS.equals("")) {
+                            if (defaultNS.isEmpty()) {
                                 // We've cleared this one already, just bail.
                                 break;
                             }
@@ -501,7 +501,7 @@ public class XMPPPacketReader {
                         parent.addText(text);
                     }
                     else {
-                        if (text.trim().length() > 0) {
+                        if (!text.trim().isEmpty()) {
                             throw new DocumentException("Cannot have text content outside of the root document");
                         }
                     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -80,7 +80,7 @@ public class ExternalClientSaslServer implements SaslServer
             throw new IllegalStateException( "Authentication exchange already completed." );
         }
 
-        if (response.length == 0 && session.getSessionData(SASLAuthentication.SASL_LAST_RESPONSE_WAS_PROVIDED_BUT_EMPTY) != null) {
+        if (response.length == 0 && session.getSessionData(SASLAuthentication.SASL_LAST_RESPONSE_WAS_PROVIDED_BUT_EMPTY) == null) {
             // No initial response. Send a challenge to get one, per RFC 4422 appendix-A.
             return new byte[ 0 ];
         }
@@ -147,7 +147,7 @@ public class ExternalClientSaslServer implements SaslServer
             authorizationIdentity = null;
         }
 
-        if ( authorizationIdentity == null || authorizationIdentity.length() == 0 )
+        if ( authorizationIdentity == null || authorizationIdentity.isEmpty())
         {
             // No authorization identity was provided, according to XEP-0178 we need to:
             //    * attempt to get it from the cert first
@@ -167,7 +167,7 @@ public class ExternalClientSaslServer implements SaslServer
                 }
             }
 
-            if ( authorizationIdentity == null || authorizationIdentity.length() == 0 )
+            if ( authorizationIdentity == null || authorizationIdentity.isEmpty())
             {
                 // Still no username to act as.  Punt.
                 authorizationIdentity = authenticationIdentity;

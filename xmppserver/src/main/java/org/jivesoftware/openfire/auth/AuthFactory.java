@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 import org.jivesoftware.openfire.lockout.LockOutManager;
+import org.jivesoftware.openfire.sasl.ScramSha1SaslServer;
 import org.jivesoftware.openfire.user.UserNotFoundException;
 import org.jivesoftware.util.Blowfish;
 import org.jivesoftware.util.JiveGlobals;
@@ -71,12 +72,12 @@ public class AuthFactory {
         initProvider(AUTH_PROVIDER.getValue());
     }
 
-    private static void initProvider(final Class clazz) {
+    private static void initProvider(final Class<? extends AuthProvider> clazz) {
 
         // Check if we need to reset the auth provider class
         if (authProvider == null || !clazz.equals(authProvider.getClass())) {
             try {
-                authProvider = (AuthProvider)clazz.newInstance();
+                authProvider = clazz.newInstance();
             }
             catch (Exception e) {
                 Log.error("Error loading auth provider: " + clazz.getName(), e);
@@ -146,7 +147,7 @@ public class AuthFactory {
     }
 
     /**
-     * Sets the users's password. This method should throw an UnsupportedOperationException
+     * Sets the user's password. This method should throw an UnsupportedOperationException
      * if this operation is not supported by the backend user store.
      *
      * @param username the username of the user.
@@ -281,17 +282,79 @@ public class AuthFactory {
         return authProvider.isScramSupported();
     }
 
+    /**
+     * Returns a SCRAM-SHA-1 salt for a user.
+     *
+     * @deprecated Use getSalt(String, String) with the mechanism name.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public static String getSalt(String username) throws UnsupportedOperationException, UserNotFoundException {
-        return authProvider.getSalt(username);
+        return authProvider.getSalt(username, ScramSha1SaslServer.MECHANISM_NAME);
     }
+
+    /**
+     * Returns a SCRAM salt for a user and mechanism.
+     */
+    public static String getSalt(final String username, final String mechanism) throws UnsupportedOperationException, UserNotFoundException {
+        return authProvider.getSalt(username, mechanism);
+    }
+
+    /**
+     * Returns a SCRAM-SHA-1 iteration count for a user.
+     *
+     * @deprecated Use getIterations(String, String) with the mechanism name.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public static int getIterations(String username) throws UnsupportedOperationException, UserNotFoundException {
-        return authProvider.getIterations(username);
+        return authProvider.getIterations(username, ScramSha1SaslServer.MECHANISM_NAME);
     }
+
+    /**
+     * Returns a SCRAM iteration count for a user and mechanism.
+     */
+    public static int getIterations(final String username, final String mechanism) throws UnsupportedOperationException, UserNotFoundException {
+        return authProvider.getIterations(username, mechanism);
+    }
+
+    /**
+     * Returns a SCRAM-SHA-1 server key for a user.
+     *
+     * @deprecated Use getServerKey(String, String) with the mechanism name.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public static String getServerKey(String username) throws UnsupportedOperationException, UserNotFoundException {
-        return authProvider.getServerKey(username);
+        return authProvider.getServerKey(username, ScramSha1SaslServer.MECHANISM_NAME);
     }
+
+    /**
+     * Returns a SCRAM server key for a user and mechanism.
+     */
+    public static String getServerKey(final String username, final String mechanism) throws UnsupportedOperationException, UserNotFoundException {
+        return authProvider.getServerKey(username, mechanism);
+    }
+
+    /**
+     * Returns a SCRAM-SHA-1 stored key for a user.
+     *
+     * @deprecated Use getStoredKey(String, String) with the mechanism name.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public static String getStoredKey(String username) throws UnsupportedOperationException, UserNotFoundException {
-        return authProvider.getStoredKey(username);
+        return authProvider.getStoredKey(username, ScramSha1SaslServer.MECHANISM_NAME);
+    }
+
+    /**
+     * Returns a SCRAM stored key for a user and mechanism.
+     */
+    public static String getStoredKey(final String username, final String mechanism) throws UnsupportedOperationException, UserNotFoundException {
+        return authProvider.getStoredKey(username, mechanism);
+    }
+
+    /**
+     * Returns all SCRAM credentials for a user and mechanism.
+     */
+    public static ScramCredentialData getScramCredential(final String username, final String mechanism) throws UnsupportedOperationException, UserNotFoundException {
+        return authProvider.getScramCredential(username, mechanism);
     }
 
     public static final String ONE_TIME_PROPERTY = "oneTimeAccessToken";

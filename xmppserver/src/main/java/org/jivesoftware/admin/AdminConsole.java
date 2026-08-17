@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -251,9 +251,9 @@ public class AdminConsole {
             URL url = null;
             try {
                 if (classLoader != null) {
-                    Enumeration e = classLoader.getResources("/META-INF/admin-sidebar.xml");
+                    Enumeration<URL> e = classLoader.getResources("/META-INF/admin-sidebar.xml");
                     while (e.hasMoreElements()) {
-                        url = (URL) e.nextElement();
+                        url = e.nextElement();
                         try {
                             in = url.openStream();
                             addModel("admin", in);
@@ -368,15 +368,6 @@ public class AdminConsole {
                 Element existingTab = getElemnetByID(id);
                 // Simple case, there is no existing tab with the same id.
                 if (existingTab == null) {
-                    // Make sure that the URL on the tab is set. If not, default to the
-                    // url of the first item.
-                    if (tab.attributeValue("url") == null) {
-                        Element firstItem = (Element) tab.selectSingleNode(
-                                "//item[@url]");
-                        if (firstItem != null) {
-                            tab.addAttribute("url", firstItem.attributeValue("url"));
-                        }
-                    }
                     generatedModel.add(tab.createCopy());
                 }
                 // More complex case -- a tab with the same id already exists.
@@ -390,6 +381,23 @@ public class AdminConsole {
 
         // OF-1484: Order everything explicitly.
         orderModel();
+
+        // Only after explicit ordering is applied (OF-3168), make sure that the URL on every tab is set. If not,
+        // default to the url of the first item.
+        for (Object o : generatedModel.selectNodes("//adminconsole//tab")) {
+            Element tab = (Element) o;
+            if (tab.attributeValue("url") == null) {
+                final List<Element> sidebars = tab.elements("sidebar");
+                if (!sidebars.isEmpty()) {
+                    sidebars.sort(new ElementByOrderAttributeComparator());
+                    final List<Element> items = sidebars.get(0).elements("item");
+                    if (!items.isEmpty()) {
+                        items.sort(new ElementByOrderAttributeComparator());
+                        tab.addAttribute("url", items.get(0).attributeValue("url"));
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -406,7 +414,7 @@ public class AdminConsole {
                 // This orders only the elements from the content, which can get messy if mixed content is of importance.
                 // At the time of writing, the content other than elements was whitespace text (for indentation), which
                 // is safe to ignore.
-                Collections.sort( node.content(), new ElementByOrderAttributeComparator() );
+                node.content().sort(new ElementByOrderAttributeComparator());
                 super.visit( node );
             }
         };
@@ -417,8 +425,8 @@ public class AdminConsole {
         // Override name.
         overrideCommonAttributes(sidebar, overrideSidebar);
         // Override entries.
-        for (Iterator i=overrideSidebar.elementIterator(); i.hasNext(); ) {
-            Element entry = (Element)i.next();
+        for (Iterator<Element> i=overrideSidebar.elementIterator(); i.hasNext(); ) {
+            Element entry = i.next();
             String id = entry.attributeValue("id");
             Element existingEntry = getElemnetByID(id);
             // Simple case, there is no existing sidebar with the same id.
@@ -444,8 +452,8 @@ public class AdminConsole {
             entry.addAttribute("description", overrideEntry.attributeValue("description"));
         }
         // Override any sidebars contained in the entry.
-        for (Iterator i=overrideEntry.elementIterator(); i.hasNext(); ) {
-            Element sidebar = (Element)i.next();
+        for (Iterator<Element> i = overrideEntry.elementIterator(); i.hasNext(); ) {
+            Element sidebar = i.next();
             String id = sidebar.attributeValue("id");
             Element existingSidebar = getElemnetByID(id);
             // Simple case, there is no existing sidebar with the same id.
@@ -499,8 +507,8 @@ public class AdminConsole {
         {
             try
             {
-                final int p1 = o1 instanceof Element ? Integer.valueOf( ((Element)o1).attributeValue( "order", "0" ) ) : 0;
-                final int p2 = o2 instanceof Element ? Integer.valueOf( ((Element)o2).attributeValue( "order", "0" ) ) : 0;
+                final int p1 = o1 instanceof Element ? Integer.parseInt( ((Element)o1).attributeValue( "order", "0" ) ) : 0;
+                final int p2 = o2 instanceof Element ? Integer.parseInt( ((Element)o2).attributeValue( "order", "0" ) ) : 0;
                 return Integer.compare( p1, p2 );
             }
             catch ( NumberFormatException e )

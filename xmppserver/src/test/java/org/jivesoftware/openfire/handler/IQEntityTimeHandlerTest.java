@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2018-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,13 @@
 package org.jivesoftware.openfire.handler;
 
 import org.dom4j.Element;
-import org.jivesoftware.util.XMPPDateTimeFormat;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.xmpp.packet.IQ;
 
-import javax.xml.bind.DatatypeConverter;
-import java.util.Calendar;
+import java.time.Instant;
 import java.util.Date;
-import java.util.GregorianCalendar;
 import java.util.TimeZone;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.lessThan;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -57,34 +50,15 @@ public class IQEntityTimeHandlerTest {
     public void testUtcDate() {
         IQEntityTimeHandler iqEntityTimeHandler = new IQEntityTimeHandler();
         Date date = new Date();
-        Calendar calendar = new GregorianCalendar();
-        calendar.setTime(date);
-        calendar.setTimeZone(TimeZone.getTimeZone("GMT"));
-        assertEquals(iqEntityTimeHandler.getUtcDate(date), DatatypeConverter.printDateTime(calendar));
-    }
 
-    @Test @Disabled
-    public void testPerformanceDatatypeConvertVsXMPPDateFormat() {
+        String actual = iqEntityTimeHandler.getUtcDate(date);
 
-        Date date = new Date();
-        Calendar calendar = new GregorianCalendar(TimeZone.getTimeZone("GMT"));
-        calendar.setTime(date);
-        long start = System.currentTimeMillis();
-        for (int i = 0; i < 1000000; i++) {
+        // Parse the produced timestamp and compare instants directly,
+        // avoiding fragile regex-based string normalization.
+        Instant actualInstant = Instant.parse(actual);
+        Instant expectedInstant = date.toInstant();
 
-            DatatypeConverter.printDateTime(calendar);
-        }
-        long durationA = System.currentTimeMillis() - start;
-        assertThat(durationA, is(lessThan(2000L)));
-
-        start = System.currentTimeMillis();
-        for (int i = 0; i < 1000000; i++) {
-            XMPPDateTimeFormat.format(date);
-        }
-        long durationB = System.currentTimeMillis() - start;
-        assertThat(durationB, is(lessThan(4000L)));
-
-        assertThat(durationA, is(lessThan(durationB)));
+        assertEquals(expectedInstant, actualInstant);
     }
 
     @Test

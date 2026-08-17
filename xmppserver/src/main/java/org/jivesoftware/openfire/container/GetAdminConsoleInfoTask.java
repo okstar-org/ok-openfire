@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import java.util.Enumeration;
 /**
  * Task that will return the bind interface and ports being used by the admin
  * console of the node where the task will be executed. When the admin console
- * is binded to all network interfaces this task will try to find a valid IP
+ * is bound to all network interfaces this task will try to find a valid IP
  * address that will work for the remote node.<p>
  *
  * A {@code null} bindInterface in the result of this task means that the task
@@ -53,7 +53,7 @@ public class GetAdminConsoleInfoTask implements ClusterTask<GetAdminConsoleInfoT
     @Override
     public void run() {
         PluginManager pluginManager = XMPPServer.getInstance().getPluginManager();
-        AdminConsolePlugin adminConsolePlugin = ((AdminConsolePlugin) pluginManager.getPlugin("admin"));
+        AdminConsolePlugin adminConsolePlugin = ((AdminConsolePlugin) pluginManager.getPluginByCanonicalName("admin").orElseThrow());
 
         bindInterface = adminConsolePlugin.getBindInterface();
         adminPort = adminConsolePlugin.getAdminUnsecurePort();

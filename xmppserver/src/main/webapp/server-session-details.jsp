@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@
 --%>
 
 <%@ page import="org.jivesoftware.openfire.SessionManager,
-                 org.jivesoftware.openfire.session.IncomingServerSession,
-                 org.jivesoftware.openfire.session.OutgoingServerSession,
                  org.jivesoftware.util.ParamUtils"
     errorPage="error.jsp"
 %>
@@ -28,7 +26,7 @@
 <%@ page import="java.net.InetAddress" %>
 <%@ page import="org.jivesoftware.util.CookieUtils" %>
 <%@ page import="org.jivesoftware.util.StringUtils" %>
-<%@ page import="org.jivesoftware.openfire.session.Session" %>
+<%@ page import="org.jivesoftware.openfire.session.*" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
@@ -60,12 +58,14 @@
         try {
             final List<IncomingServerSession> incomingServerSessions = sessionManager.getIncomingServerSessions(domainname);
             for (Session incomingServerSession : incomingServerSessions) {
+                incomingServerSession.markNonResumable();
                 incomingServerSession.close();
             }
 
             Collection<OutgoingServerSession> outgoingServerSessions = sessionManager.getOutgoingServerSessions(domainname);
             for (OutgoingServerSession outgoingServerSession : outgoingServerSessions) {
                 if (outgoingServerSession != null) {
+                    outgoingServerSession.markNonResumable();
                     outgoingServerSession.close();
                 }
             }
@@ -261,22 +261,24 @@
                 <c:if test="${not empty inSessions}">
                     <table style="width: 100%">
                         <tr>
-                            <th style="width: 20%;" colspan="2"><fmt:message key="server.session.details.incoming_session" /> <fmt:message key="server.session.details.streamid" /></th>
+                            <th colspan="2"><fmt:message key="server.session.details.incoming_session" /> <fmt:message key="server.session.details.streamid" /></th>
                             <c:if test="${clusteringEnabled}">
-                                <th style="width: 1%; "><fmt:message key="server.session.details.node"/></th>
+                                <th><fmt:message key="server.session.details.node"/></th>
                             </c:if>
-                            <th style="width: 10%;"><fmt:message key="server.session.details.authentication"/></th>
-                            <th style="width: 10%;"><fmt:message key="server.session.details.tls_version"/></th>
-                            <th style="width: 10%;"><fmt:message key="server.session.details.cipher"/></th>
-                            <th style="width: 10%;"><fmt:message key="server.session.label.creation" /></th>
-                            <th style="width: 10%;"><fmt:message key="server.session.label.last_active" /></th>
-                            <th style="width: 1%;"><fmt:message key="server.session.details.incoming_statistics" /></th>
-                            <th style="width: 1%;"><fmt:message key="server.session.details.outgoing_statistics" /></th>
+                            <th><fmt:message key="server.session.details.authentication"/></th>
+                            <th><fmt:message key="server.session.details.tls_version"/></th>
+                            <th><fmt:message key="server.session.details.cipher"/></th>
+                            <th><fmt:message key="server.session.details.local_port"/></th>
+                            <th><fmt:message key="server.session.details.remote_port"/></th>
+                            <th><fmt:message key="server.session.label.creation" /></th>
+                            <th><fmt:message key="server.session.label.last_active" /></th>
+                            <th><fmt:message key="server.session.details.incoming_statistics" /></th>
+                            <th><fmt:message key="server.session.details.outgoing_statistics" /></th>
                         </tr>
 
                         <c:forEach items="${inSessions}" var="session">
                             <tr>
-                                <td style="width: 1%">
+                                <td>
                                     <c:choose>
                                         <c:when test="${session.encrypted}">
                                             <img src="images/lock.gif" alt="An encrypted connection">
@@ -299,7 +301,7 @@
                                         </c:choose>
                                     </td>
                                 </c:if>
-                                <td >
+                                <td>
                                     <c:choose>
                                         <c:when test="${session.isUsingServerDialback()}">
                                             <fmt:message key="server.session.details.dialback"/>
@@ -313,6 +315,22 @@
                                     </c:choose>
                                 <td><c:out value="${session.TLSProtocolName}"/></td>
                                 <td><c:out value="${session.cipherSuiteName}"/></td>
+                                <td>
+                                    <c:choose>
+                                        <c:when test="${session.localPort gt 0}">
+                                            <c:out value="${session.localPort}"/>
+                                        </c:when>
+                                        <c:otherwise>&nbsp;</c:otherwise>
+                                    </c:choose>
+                                </td>
+                                <td>
+                                    <c:choose>
+                                        <c:when test="${session.remotePort gt 0}">
+                                            <c:out value="${session.remotePort}"/>
+                                        </c:when>
+                                        <c:otherwise>&nbsp;</c:otherwise>
+                                    </c:choose>
+                                </td>
                                 <td ><fmt:formatDate type="both" value="${session.creationDate}"/></td>
                                 <td ><fmt:formatDate type="both" value="${session.lastActiveDate}"/></td>
                                 <td style="text-align: center" ><fmt:formatNumber type="number" value="${session.numClientPackets}"/></td>
@@ -326,17 +344,19 @@
                 <c:if test="${not empty outSessions}">
                     <table style="width: 100%">
                         <tr>
-                            <th style="width: 20%;" colspan="2"><fmt:message key="server.session.details.outgoing_session" /> <fmt:message key="server.session.details.streamid" /></th>
+                            <th colspan="2"><fmt:message key="server.session.details.outgoing_session" /> <fmt:message key="server.session.details.streamid" /></th>
                             <c:if test="${clusteringEnabled}">
-                                <th style="width: 1%; "><fmt:message key="server.session.details.node"/></th>
+                                <th><fmt:message key="server.session.details.node"/></th>
                             </c:if>
-                            <th style="width: 10%; "><fmt:message key="server.session.details.authentication"/></th>
-                            <th style="width: 10%; "><fmt:message key="server.session.details.tls_version"/></th>
-                            <th style="width: 10%; "><fmt:message key="server.session.details.cipher"/></th>
-                            <th style="width: 10%; "><fmt:message key="server.session.label.creation" /></th>
-                            <th style="width: 10%; "><fmt:message key="server.session.label.last_active" /></th>
-                            <th style="width: 1%; "><fmt:message key="server.session.details.incoming_statistics" /></th>
-                            <th style="width: 1%; "><fmt:message key="server.session.details.outgoing_statistics" /></th>
+                            <th><fmt:message key="server.session.details.authentication"/></th>
+                            <th><fmt:message key="server.session.details.tls_version"/></th>
+                            <th><fmt:message key="server.session.details.cipher"/></th>
+                            <th><fmt:message key="server.session.details.local_port"/></th>
+                            <th><fmt:message key="server.session.details.remote_port"/></th>
+                            <th><fmt:message key="server.session.label.creation" /></th>
+                            <th><fmt:message key="server.session.label.last_active" /></th>
+                            <th><fmt:message key="server.session.details.incoming_statistics" /></th>
+                            <th><fmt:message key="server.session.details.outgoing_statistics" /></th>
                         </tr>
 
                         <c:forEach items="${outSessions}" var="session">
@@ -378,6 +398,22 @@
                                     </c:choose>
                                 <td><c:out value="${session.TLSProtocolName}"/></td>
                                 <td><c:out value="${session.cipherSuiteName}"/></td>
+                                <td>
+                                    <c:choose>
+                                        <c:when test="${session.localPort gt 0}">
+                                            <c:out value="${session.localPort}"/>
+                                        </c:when>
+                                        <c:otherwise>&nbsp;</c:otherwise>
+                                    </c:choose>
+                                </td>
+                                <td>
+                                    <c:choose>
+                                        <c:when test="${session.remotePort gt 0}">
+                                            <c:out value="${session.remotePort}"/>
+                                        </c:when>
+                                        <c:otherwise>&nbsp;</c:otherwise>
+                                    </c:choose>
+                                </td>
                                 <td ><fmt:formatDate type="both" value="${session.creationDate}"/></td>
                                 <td ><fmt:formatDate type="both" value="${session.lastActiveDate}"/></td>
                                 <td style="text-align: center" ><fmt:formatNumber type="number" value="${session.numClientPackets}"/></td>

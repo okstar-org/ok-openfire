@@ -1,10 +1,10 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
-  - you may not use this file except in compliance with the License.
+  - you may not use this file except in compliance with the License.    
   - You may obtain a copy of the License at
   -
   -     http://www.apache.org/licenses/LICENSE-2.0
@@ -24,6 +24,7 @@
 <%@ page import="java.net.URLEncoder" %>
 <%@ page import="java.time.Duration" %>
 <%@ page import="org.jivesoftware.openfire.XMPPServer" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -85,7 +86,7 @@
             }
             Duration idle = null;
             // Try to obtain an int from the provided strings
-            if (errors.size() == 0) {
+            if (errors.isEmpty()) {
                 try {
                     idle = Duration.ofMinutes(Integer.parseInt(idletime));
                     if (idle.isNegative()) {
@@ -116,7 +117,7 @@
             }
             Duration idle = null;
             // Try to obtain an int from the provided strings
-            if (errors.size() == 0) {
+            if (errors.isEmpty()) {
                 try {
                     idle = Duration.ofMinutes(Integer.parseInt(pingtime));
                     if (idle.isNegative()) {
@@ -136,7 +137,7 @@
         }
 
         if (errors.isEmpty()) {
-            response.sendRedirect("muc-tasks.jsp?idleSettingSuccess=true&mucname="+URLEncoder.encode(mucname, "UTF-8"));
+            response.sendRedirect("muc-tasks.jsp?idleSettingSuccess=true&mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8));
             return;
         }
     }
@@ -157,7 +158,7 @@
         Duration batchInterval = mucService.getLogMaxBatchInterval();
         Duration batchGracePeriod = mucService.getLogBatchGracePeriod();
         // Try to obtain an int from the provided strings
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             try {
                 size = Integer.parseInt(maxBatchSize);
             }
@@ -182,13 +183,13 @@
             }
         }
 
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             mucService.setLogMaxConversationBatchSize( size );
             mucService.setLogMaxBatchInterval( batchInterval );
             mucService.setLogBatchGracePeriod( batchGracePeriod );
             // Log the event
             webManager.logEvent("edited muc conversation log settings for service "+mucname, "maxBatchSize = "+maxBatchSize+"\nmaxBatchInterval = "+maxBatchInterval+"\nbatchGrace = "+batchGrace);
-            response.sendRedirect("muc-tasks.jsp?logSettingSuccess=true&mucname="+URLEncoder.encode(mucname, "UTF-8"));
+            response.sendRedirect("muc-tasks.jsp?logSettingSuccess=true&mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8));
             return;
         }
     }
@@ -209,7 +210,7 @@
 <head>
 <title><fmt:message key="muc.tasks.title"/></title>
 <meta name="subPageID" content="muc-tasks"/>
-<meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, "UTF-8") %>"/>
+<meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8) %>"/>
 <meta name="helpPage" content="edit_idle_user_settings.html"/>
 </head>
 <body>
@@ -262,7 +263,7 @@
 
 <p>
     <fmt:message key="muc.tasks.info" />
-    <fmt:message key="groupchat.service.settings_affect" /> <b><a href="muc-service-edit-form.jsp?mucname=<%= URLEncoder.encode(mucname, "UTF-8") %>"><%= StringUtils.escapeHTMLTags(mucname) %></a></b>
+    <fmt:message key="groupchat.service.settings_affect" /> <b><a href="muc-service-edit-form.jsp?mucname=<%= URLEncoder.encode(mucname, StandardCharsets.UTF_8) %>"><%= StringUtils.escapeHTMLTags(mucname) %></a></b>
 </p>
 
 <!-- BEGIN 'Idle User Settings' -->
@@ -278,10 +279,10 @@
                     <input type="checkbox" name="pingEnabled" value="true" id="cb01" ${empty mucService.idleUserPingThreshold ? '' : 'checked'}>
                 </td>
                 <td>
-                    <label for="cb01"><fmt:message key="muc.tasks.ping_user" /></label>
-                    <input type="number" min="1" id="pingtime" name="pingtime" size="5" maxlength="5" onclick="this.form.pingEnabled[1].checked=true;"
-                           value="${empty mucService.idleUserPingThreshold ? '8' : mucService.idleUserPingThreshold.toMinutes()}">
-                    <label for="pingtime"><fmt:message key="global.minutes" /></label>.
+                    <label for="cb01"><fmt:message key="muc.tasks.ping_user"><fmt:param>
+                        <input type="number" min="1" id="pingtime" name="pingtime" size="5" maxlength="5" onclick="this.form.pingEnabled.checked=true;"
+                               value="${empty mucService.idleUserPingThreshold ? '240' : mucService.idleUserPingThreshold.toMinutes()}">
+                    </fmt:param></fmt:message></label>
                 </td>
             </tr>
             <tr>
@@ -289,10 +290,10 @@
                     <input type="checkbox" name="kickEnabled" value="true" id="cb02" ${empty mucService.idleUserKickThreshold ? '' : 'checked'}>
                 </td>
                 <td>
-                    <label for="cb02"><fmt:message key="muc.tasks.kick_user" /></label>
-                    <input type="number" min="1" id="idletime" name="idletime" size="5" maxlength="5" onclick="this.form.kickEnabled[1].checked=true;"
-                           value="${empty mucService.idleUserKickThreshold ? '30' : mucService.idleUserKickThreshold.toMinutes()}">
-                    <label for="idletime"><fmt:message key="global.minutes" /></label>.
+                    <label for="cb02"><fmt:message key="muc.tasks.kick_user"><fmt:param>
+                        <input type="number" min="1" id="idletime" name="idletime" size="5" maxlength="5" onclick="this.form.kickEnabled.checked=true;"
+                               value="${empty mucService.idleUserKickThreshold ? '30' : mucService.idleUserKickThreshold.toMinutes()}">
+                    </fmt:param></fmt:message></label>
                 </td>
             </tr>
         </tbody>

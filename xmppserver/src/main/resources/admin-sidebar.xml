@@ -100,6 +100,11 @@
                   url="http-bind.jsp"
                   description="${sidebar.http-bind.descr}"/>
 
+            <!-- DNS overrides -->
+            <item id="dns-overrides" name="${sidebar.dns-overrides}"
+                  url="dns-overrides.jsp"
+                  description="${sidebar.dns-overrides.descr}"/>
+
             <!-- Manage updates -->
             <item id="manage-updates" name="${sidebar.manage-updates}"
                   url="manage-updates.jsp"
@@ -280,6 +285,10 @@
                   url="security-certificate-store-backup.jsp"
                   description="${sidebar.certificate-stores-backup.descr}"/>
 
+            <item id="security-certificate-expiry-check" name="${sidebar.ssl.certificate.expirycheck}"
+                  url="security-certificate-expiry-check.jsp"
+                  description="${sidebar.ssl.certificate.expirycheck.descr}"/>
+
         </sidebar>
 
         <!-- Server Settings -->
@@ -359,6 +368,11 @@
                     <item id="user-properties" name="${sidebar.user-properties}"
                           url="user-properties.jsp"
                           description="${sidebar.user-properties.descr}"/>
+
+                    <!-- Profile Information -->
+                    <item id="user-profile" name="${sidebar.user-profile}"
+                          url="user-profile.jsp"
+                          description="${sidebar.user-profile.descr}"/>
 
                     <!-- User Roster -->
                     <item id="user-roster" name="${sidebar.user-roster}"
@@ -505,12 +519,22 @@
                           url="muc-room-federation.jsp"
                           description="${sidebar.muc-room-federation.descr}"/>
 
+                    <!-- Clear Chat History -->
+                    <item id="muc-room-clear-chat" name="${sidebar.muc-room-clear-chat}"
+                          url="muc-room-clear-chat.jsp"
+                          description="${sidebar.muc-room-clear-chat.descr}"/>
+
                     <!-- Delete Room -->
                     <item id="muc-room-delete" name="${sidebar.muc-room-delete}"
                           url="muc-room-delete.jsp"
                           description="${sidebar.muc-room-delete.descr}"/>
                 </sidebar>
             </item>
+
+            <!-- MUC Room Name retirees (retired room names) -->
+            <item id="muc-room-retirees" name="${sidebar.muc-room-retirees}"
+                  url="muc-room-retirees.jsp"
+                  description="${sidebar.muc-room-retirees.descr}"/>
 
             <!-- Create New Room -->
             <item id="muc-room-create" name="${sidebar.muc-room-create}"

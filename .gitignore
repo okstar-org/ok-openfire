@@ -41,3 +41,12 @@ distribution/build/osx/
 .gradle
 
 aioxmpp
+
+# Ignore AI context files (for now)
+CLAUDE.md
+.claude
+
+# Ignore developer docs (for now)
+docs
+
+conversations.apk

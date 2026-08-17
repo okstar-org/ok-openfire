@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,12 +68,30 @@ public abstract class StanzaHandler {
     // DANIELE: Indicate if a session is already created
     protected boolean sessionCreated = false;
 
-    // Flag that indicates that the client requested to use TLS and TLS has been negotiated. Once the
-    // client sent a new initial stream header the value will return to false.
+    /**
+     * Flag that indicates that the client requested to use TLS and TLS has been negotiated. Once the
+     * client sent a new initial stream header the value will return to false.
+     *
+     * Note that this is capturing the status of TLS 'in flight', not a durable fact that TLS was established.
+     */
     protected boolean startedTLS = false;
-    // Flag that indicates that the client requested to be authenticated. Once the
-    // authentication process is over the value will return to false.
+
+    /**
+     * Flag that indicates that the client requested to be authenticated. Once the
+     * authentication process is over the value will return to false.
+     *
+     * Note that this is capturing the status of SASL 'in flight', not a durable fact that SASL was used.
+     */
     protected boolean startedSASL = false;
+
+    /**
+     * Flag that indicates that the client used SASL2 (rather than the older, multi-roundtrip SASL(1)) to
+     * authenticate.
+     *
+     * Unlike {@link #startedTLS} and {@link #startedSASL} this captures a durable fact that SASL2 was used.
+     */
+    protected boolean usingSASL2 = false;
+
     /**
      * SASL status based on the last SASL interaction
      */
@@ -149,7 +167,7 @@ public abstract class StanzaHandler {
         // Verify if end of stream was requested
         if (isEndOfStream(stanza)) {
             if (session != null) {
-                session.getStreamManager().formalClose();
+                session.setHasReceivedEndOfStream();
                 Log.debug( "Closing session as an end-of-stream was received: {}", session );
                 session.close();
             }
@@ -202,10 +220,27 @@ public abstract class StanzaHandler {
             // User is trying to authenticate using SASL
             startedSASL = true;
             // Process authentication stanza
-            saslStatus = SASLAuthentication.handle(session, doc);
-        } else if (startedSASL && "response".equals(tag) || "abort".equals(tag)) {
+            saslStatus = SASLAuthentication.handle(session, doc, usingSASL2);
+        } else if ("authenticate".equals(tag)) {
+            // User is trying to authenticate using SASL2.
+            startedSASL = true;
+            usingSASL2 = true;
+            saslStatus = SASLAuthentication.handle(session, doc, usingSASL2);
+            if (saslStatus == SASLAuthentication.Status.authenticated && usingSASL2) {
+                startedSASL = false; // Without a multi-step SASL mechanism, this can be reset here immediately, rather than in initiateSession (as SASL1 does).
+                sasl2Successful();
+            }
+        } else if (startedSASL && ("response".equals(tag) || "abort".equals(tag))) {
             // User is responding to SASL challenge. Process response
-            saslStatus = SASLAuthentication.handle(session, doc);
+            saslStatus = SASLAuthentication.handle(session, doc, usingSASL2);
+            if (saslStatus == SASLAuthentication.Status.failed) {
+                startedSASL = false;
+                usingSASL2 = false;
+            }
+            if (saslStatus == SASLAuthentication.Status.authenticated && usingSASL2) {
+                startedSASL = false; // Symmetric with the single-step reset in the 'authenticate' branch.
+                sasl2Successful();
+            }
         }
         else if ("compress".equals(tag)) {
             // Client is trying to initiate compression
@@ -237,6 +272,7 @@ public abstract class StanzaHandler {
         String tag = doc.getName();
         if ("error".equals(tag)) {
             Log.info("The stream is being closed by the peer ('{}'), which sent this stream error: {}", session.getAddress(), doc.asXML());
+            session.markNonResumable();
             session.close();
         }
         else if ("message".equals(tag)) {
@@ -312,7 +348,7 @@ public abstract class StanzaHandler {
                 // The original packet contains a malformed JID so answer an error
                 IQ reply = new IQ();
                 if (!doc.elements().isEmpty()) {
-                    reply.setChildElement(((Element)doc.elements().get(0)).createCopy());
+                    reply.setChildElement((doc.elements().get(0)).createCopy());
                 }
                 reply.setID(doc.attributeValue("id"));
                 reply.setTo(session.getAddress());
@@ -327,8 +363,7 @@ public abstract class StanzaHandler {
                 // IQ packets MUST have an 'id' attribute so close the connection
                 Log.debug( "Closing session, as it sent us an IQ packet that has no ID attribute: {}. Affected session: {}", packet.toXML(), session );
                 StreamError error = new StreamError(StreamError.Condition.invalid_xml, "Stanza is missing 'id' attribute.");
-                session.deliverRawText(error.toXML());
-                session.close();
+                session.close(error);
                 return;
             }
             processIQ(packet);
@@ -336,6 +371,7 @@ public abstract class StanzaHandler {
         else {
             if (!processUnknowPacket(doc)) {
                 Log.warn(LocaleUtils.getLocalizedString("admin.error.packet.tag") + "{}. Closing session: {}", doc.asXML(), session);
+                session.markNonResumable();
                 session.close();
             }
         }
@@ -352,7 +388,7 @@ public abstract class StanzaHandler {
                     for (Element element : elements){
                         session.setSoftwareVersionData(element.getName(), element.getStringValue());
                     }
-                }    
+                }
             } catch (Exception e) {
                 Log.error("Unexpected exception while processing IQ Version stanza from '{}'", session.getAddress(), e);
             }
@@ -468,6 +504,7 @@ public abstract class StanzaHandler {
         catch (Exception e) {
             Log.error("Error while negotiating TLS with connection {}", connection, e);
             connection.deliverRawText("<failure xmlns=\"urn:ietf:params:xml:ns:xmpp-tls\"/>");
+            session.markNonResumable();
             connection.close();
             return false;
         }
@@ -489,12 +526,6 @@ public abstract class StanzaHandler {
         final Element features = DocumentHelper.createElement(QName.get("features", "stream", "http://etherx.jabber.org/streams"));
         document.getRootElement().add(features);
 
-        // Include available SASL Mechanisms
-        final Element mechanismsElement=SASLAuthentication.getSASLMechanisms(session);
-        if (mechanismsElement!=null) {
-        	features.add(mechanismsElement);
-        }
-
         // Include specific features such as auth and register for client sessions
         final List<Element> specificFeatures = session.getAvailableStreamFeatures();
         if (specificFeatures != null) {
@@ -514,8 +545,28 @@ public abstract class StanzaHandler {
      */
     protected void saslSuccessful() {
         final Document document = getStreamHeader();
-        final Element features = DocumentHelper.createElement(QName.get("features", "stream", "http://etherx.jabber.org/streams"));
+        final Element features = generateFeatures();
         document.getRootElement().add(features);
+        connection.deliverRawText(StringUtils.asUnclosedStream(document));
+    }
+
+    /**
+     * Emits post-authentication stream features for SASL2 (XEP-0388), which does NOT restart the stream.
+     * On TCP the features element is sent inline in the existing stream. Transports with different framing
+     * (e.g. RFC 7395 WebSocket) override this.
+     */
+    protected void sasl2Successful() {
+        final Element features = generateFeatures();
+        connection.deliverRawText(features.asXML());
+    }
+
+    /**
+     * Helper to generate stream:features, populated simply from the session.,
+     *
+     * @return Element <stream:features/>
+     */
+    protected Element generateFeatures() {
+        final Element features = DocumentHelper.createElement(QName.get("features", "stream", "http://etherx.jabber.org/streams"));
 
         // Include specific features such as resource binding and session establishment for client sessions
         final List<Element> specificFeatures = session.getAvailableStreamFeatures();
@@ -525,7 +576,7 @@ public abstract class StanzaHandler {
             }
         }
 
-        connection.deliverRawText(StringUtils.asUnclosedStream(document));
+        return features;
     }
 
     /**
@@ -591,13 +642,6 @@ public abstract class StanzaHandler {
         final Element features = DocumentHelper.createElement(QName.get("features", "stream", "http://etherx.jabber.org/streams"));
         document.getRootElement().add(features);
 
-        // Include SASL mechanisms only if client has not been authenticated
-        if (!session.isAuthenticated()) {
-            final Element saslMechanisms = SASLAuthentication.getSASLMechanisms(session);
-            if (saslMechanisms != null) {
-                features.add(saslMechanisms);
-            }
-        }
         // Include specific features such as resource binding and session establishment for client sessions
         final List<Element> specificFeatures = session.getAvailableStreamFeatures();
         if (specificFeatures != null) {
@@ -639,7 +683,7 @@ public abstract class StanzaHandler {
      */
     protected void closeNeverEncryptedConnection() {
         // Send a stream error and close the underlying connection.
-        connection.close(new StreamError(StreamError.Condition.not_authorized, "TLS is mandatory, but was established."));
+        connection.close(new StreamError(StreamError.Condition.not_authorized, "TLS is mandatory, but was not established."));
         // Log a warning so that admins can track this case from the server side
         Log.warn("TLS was required by the server and connection was never encrypted. Closing connection: {}", connection);
     }
@@ -693,7 +737,8 @@ public abstract class StanzaHandler {
             }
         }
         catch (final StreamErrorException ex) {
-            Log.warn("Failed to create a session. Closing connection: {}", connection, ex);
+            Log.warn("Failed to create a session, as the stream opened by the peer has a problem: {} - '{}' (a full stack trace is logged on debug level). Closing connection: {}", ex.getStreamError().getCondition(), ex.getStreamError().getText(), connection);
+            Log.debug("Failed to create a session.", ex);
             final Element stream = DocumentHelper.createElement(QName.get("stream", "stream", "http://etherx.jabber.org/streams"));
             final Document document = DocumentHelper.createDocument(stream);
             document.setXMLEncoding(StandardCharsets.UTF_8.toString());

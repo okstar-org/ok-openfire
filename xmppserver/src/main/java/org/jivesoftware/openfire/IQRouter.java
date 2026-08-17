@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,8 +106,7 @@ public class IQRouter extends BasicModule {
                 handle(packet);
             } else if (SessionPacketRouter.isInvalidStanzaSentPriorToResourceBinding(packet, session)) {
                 Log.debug("Closing session that attempts to send stanza to an entity other than the server itself or the client's account, before completing resource binding. Session closed: {}", session);
-                session.deliverRawText(new StreamError(StreamError.Condition.not_authorized, "Do not send invalid stanza prior to authentication/resource binding.").toXML());
-                session.close();
+                session.close(new StreamError(StreamError.Condition.not_authorized, "Do not send invalid stanza prior to authentication/resource binding."));
                 return;
             } else {
                 Log.debug("Rejecting stanza from client that has not (yet?) established an authenticated session: {}", packet.toXML());
@@ -249,7 +248,7 @@ public class IQRouter extends BasicModule {
     public void addIQResultListener(String id, IQResultListener listener, long timeoutmillis) {
         resultListeners.put(id, listener);
         resultPending.put(id, XMPPServer.getInstance().getNodeID());
-        resultTimeout.put(id, System.currentTimeMillis() + timeoutmillis);
+        resultTimeout.put(id, System.nanoTime() + Duration.ofMillis(timeoutmillis).toNanos());
     }
 
     @Override
@@ -413,7 +412,7 @@ public class IQRouter extends BasicModule {
                     && !XMPPServer.getInstance().isRemote(recipientJID)
                     && !userManager.isRegisteredUser(recipientJID, false)
                     && !UserManager.isPotentialFutureLocalUser(recipientJID)
-                    && !sessionManager.isAnonymousRoute(recipientJID.getNode())
+                    && !sessionManager.isAnonymousClientSession(recipientJID)
                     && sessionManager.getSession(recipientJID) == null
                     && !(recipientJID.asBareJID().equals(packet.getFrom().asBareJID()) && sessionManager.isPreAuthenticatedSession(packet.getFrom())) // A pre-authenticated session queries the server about itself.
                 )
@@ -433,7 +432,7 @@ public class IQRouter extends BasicModule {
                     IQ dummyIQ = packet.createCopy();
                     dummyIQ.setFrom(packet.getTo());
                     dummyIQ.setTo(packet.getFrom());
-                    if (!((LocalClientSession) session).canProcess(dummyIQ)) {
+                    if (!((LocalClientSession) session).canDeliver(dummyIQ)) {
                         packet.setTo(session.getAddress());
                         packet.setFrom((JID) null);
                         packet.setError(PacketError.Condition.not_acceptable);
@@ -552,7 +551,7 @@ public class IQRouter extends BasicModule {
             while (it.hasNext()) {
                 final Map.Entry<String, Long> pointer = it.next();
 
-                if (System.currentTimeMillis() < pointer.getValue()) {
+                if (System.nanoTime() - pointer.getValue() < 0) {
                     // This entry has not expired yet. Ignore it.
                     continue;
                 }

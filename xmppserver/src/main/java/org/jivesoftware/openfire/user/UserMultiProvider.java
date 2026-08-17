@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 IgniteRealtime.org, 2018 Ignite Realtime Foundation. All rights reserved
+ * Copyright (C) 2016 IgniteRealtime.org, 2018-2026 Ignite Realtime Foundation. All rights reserved
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,51 +16,84 @@
 
 package org.jivesoftware.openfire.user;
 
-import org.jivesoftware.util.ClassUtils;
-import org.jivesoftware.util.JiveGlobals;
+import org.jivesoftware.util.SystemProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import java.lang.reflect.Constructor;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 /**
  * A {@link UserProvider} that delegates to one or more 'backing' UserProvider.
  *
- * @author GUus der Kinderen, guus@goodbytes.nl
+ * @author Guus der Kinderen, guus@goodbytes.nl
  */
 public abstract class UserMultiProvider implements UserProvider
 {
     private final static Logger Log = LoggerFactory.getLogger( UserMultiProvider.class );
 
     /**
-     * Instantiates a UserProvider based on a property value (that is expected to be a class name). When the property
-     * is not set, this method returns null. When the property is set, but an exception occurs while instantiating
-     * the class, this method logs the error and returns null.
+     * Instantiates a UserProvider based on Class-based system property. When the property is not set, this
+     * method returns null. When the property is set, but an exception occurs while instantiating the class, this method
+     * logs the error and returns null.
      *
      * UserProvider classes are required to have a public, no-argument constructor.
      *
-     * @param propertyName A property name (cannot ben ull).
+     * @param implementationProperty A property that defines the class of the instance to be returned.
      * @return A user provider (can be null).
      */
-    public static UserProvider instantiate( String propertyName )
+    public static UserProvider instantiate(@Nonnull final SystemProperty<Class> implementationProperty)
     {
-        final String className = JiveGlobals.getProperty( propertyName );
-        if ( className == null )
-        {
-            Log.debug( "Property '{}' is undefined. Skipping.", propertyName );
+        return instantiate(implementationProperty, null);
+    }
+
+    /**
+     * Instantiates a UserProvider based on Class-based system property. When the property is not set, this
+     * method returns null. When the property is set, but an exception occurs while instantiating the class, this method
+     * logs the error and returns null.
+     *
+     * UserProvider classes are required to have a public, no-argument constructor, but can have an optional additional
+     * constructor that takes a single String argument. If such constructor is defined, then it is invoked with the
+     * value of the second argument of this method. This is typically used to (but needs not) identify a property
+     * (by name) that holds additional configuration for the to be instantiated UserProvider. This
+     * implementation will pass on any non-empty value to the constructor. When a configuration argument is provided,
+     * but no constructor exists in the implementation that accepts a single String value, this method will log a
+     * warning and attempt to return an instance based on the no-arg constructor of the class.
+     *
+     * @param implementationProperty A property that defines the class of the instance to be returned.
+     * @param configProperty an opaque string value passed to the constructor.
+     * @return A user provider (can be null).
+     */
+    public static UserProvider instantiate(@Nonnull final SystemProperty<Class> implementationProperty, @Nullable final SystemProperty<String> configProperty)
+    {
+        final Class<? extends UserProvider> implementationClass = implementationProperty.getValue();
+        if (implementationClass == null) {
+            Log.debug( "Property '{}' is undefined or has no value. Skipping.", implementationProperty.getKey() );
             return null;
         }
-        Log.debug( "About to to instantiate an UserProvider '{}' based on the value of property '{}'.", className, propertyName );
-        try
-        {
-            final Class c = ClassUtils.forName( className );
-            final UserProvider provider = (UserProvider) c.newInstance();
-            Log.debug( "Instantiated UserProvider '{}'", className );
-            return provider;
-        }
-        catch ( Exception e )
-        {
-            Log.error( "Unable to load UserProvider '{}'. Users in this provider will be disabled.", className, e );
+        Log.debug("About to to instantiate an UserProvider '{}' based on the value of property '{}'.", implementationClass, implementationProperty.getKey());
+
+        try {
+            if (configProperty != null && configProperty.getValue() != null && !configProperty.getValue().isEmpty()) {
+                try {
+                    final Constructor<? extends UserProvider> constructor = implementationClass.getConstructor(String.class);
+                    final UserProvider result = constructor.newInstance(configProperty.getValue());
+                    Log.debug("Instantiated UserProvider '{}' with configuration: '{}'", implementationClass.getName(), configProperty.getValue());
+                    return result;
+                } catch (NoSuchMethodException e) {
+                    Log.warn("Custom configuration is defined for the a provider but the configured class ('{}') does not provide a constructor that takes a String argument. Custom configuration will be ignored. Ignored configuration: '{}'", implementationProperty.getValue().getName(), configProperty);
+                }
+            }
+
+            final UserProvider result = implementationClass.getDeclaredConstructor().newInstance();
+            Log.debug("Instantiated UserProvider '{}'", implementationClass.getName());
+            return result;
+        } catch (Exception e) {
+            Log.error("Unable to load UserProvider '{}'. Data from this provider will not be available.", implementationClass.getName(), e);
             return null;
         }
     }
@@ -91,40 +124,27 @@ public abstract class UserMultiProvider implements UserProvider
     @Override
     public int getUserCount()
     {
-        int total = 0;
-        // TODO Make calls concurrent for improved throughput.
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            total += provider.getUserCount();
-        }
-
-        return total;
+        return getUserProviders().parallelStream()
+            .map(UserProvider::getUserCount)
+            .reduce(0, Integer::sum);
     }
 
     @Override
     public Collection<User> getUsers()
     {
-        final Collection<User> result = new ArrayList<>();
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            // TODO Make calls concurrent for improved throughput.
-            result.addAll( provider.getUsers() );
-        }
-
-        return result;
+        return getUserProviders().parallelStream()
+            .map(UserProvider::getUsers)
+            .flatMap(Collection::stream)
+            .collect(Collectors.toSet());
     }
 
     @Override
     public Collection<String> getUsernames()
     {
-        final Collection<String> result = new ArrayList<>();
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            // TODO Make calls concurrent for improved throughput.
-            result.addAll( provider.getUsernames() );
-        }
-
-        return result;
+        return getUserProviders().parallelStream()
+            .map(UserProvider::getUsernames)
+            .flatMap(Collection::stream)
+            .collect(Collectors.toSet());
     }
 
     @Override
@@ -169,32 +189,27 @@ public abstract class UserMultiProvider implements UserProvider
     @Override
     public Collection<User> findUsers( Set<String> fields, String query ) throws UnsupportedOperationException
     {
-        final List<User> userList = new ArrayList<>();
-        int supportSearch = getUserProviders().size();
+        final AtomicLong supportSearch = new AtomicLong(getUserProviders().size());
+        final Set<User> result = getUserProviders().parallelStream()
+            .map(provider -> {
+                try {
+                    // Use only those fields that are supported by the provider.
+                    final Set<String> supportedFields = new HashSet<>(fields);
+                    supportedFields.retainAll(provider.getSearchFields());
+                    return provider.findUsers(supportedFields, query);
+                } catch (UnsupportedOperationException uoe) {
+                    Log.warn("UserProvider.findUsers is not supported by this UserProvider: {}. Its users are not returned as part of search queries.", provider.getClass().getName());
+                    supportSearch.decrementAndGet();
+                    return new HashSet<User>();
+                }
+            })
+            .flatMap(Collection::stream)
+            .collect(Collectors.toSet());
 
-        // TODO Make calls concurrent for improved throughput.
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            try
-            {
-                // Use only those fields that are supported by the provider.
-                final Set<String> supportedFields = new HashSet<>( fields );
-                supportedFields.retainAll( provider.getSearchFields() );
-
-                userList.addAll( provider.findUsers( supportedFields, query ) );
-            }
-            catch ( UnsupportedOperationException uoe )
-            {
-                Log.warn( "UserProvider.findUsers is not supported by this UserProvider: {}. Its users are not returned as part of search queries.", provider.getClass().getName() );
-                supportSearch--;
-            }
+        if (supportSearch.longValue() == 0) {
+            throw new UnsupportedOperationException("None of the backing providers support this operation.");
         }
-
-        if ( supportSearch == 0 )
-        {
-            throw new UnsupportedOperationException( "None of the backing providers support this operation." );
-        }
-        return userList;
+        return result;
     }
 
     /**
@@ -234,7 +249,7 @@ public abstract class UserMultiProvider implements UserProvider
                 supportedFields.retainAll( provider.getSearchFields() );
 
                 // Query the provider for sub-results.
-                final Collection<User> providerResults = provider.findUsers( fields, query );
+                final Collection<User> providerResults = provider.findUsers( supportedFields, query );
 
                 // Keep track of how many hits we have had so far.
                 totalMatchedUserCount += providerResults.size();
@@ -250,7 +265,7 @@ public abstract class UserMultiProvider implements UserProvider
                 final int providerResultMax = numResults - userList.size();
                 final List<User> providerList = providerResults instanceof List<?> ?
                         (List<User>) providerResults : new ArrayList<>( providerResults );
-                userList.addAll( providerList.subList( providerStartIndex, providerResultMax ) );
+                userList.addAll( providerList.subList( providerStartIndex, Math.min( providerList.size(), providerResultMax ) ));
 
                 // Check if we have enough results.
                 if ( userList.size() >= numResults )
@@ -281,24 +296,20 @@ public abstract class UserMultiProvider implements UserProvider
     @Override
     public Set<String> getSearchFields() throws UnsupportedOperationException
     {
-        int supportSearch = getUserProviders().size();
-        final Set<String> result = new HashSet<>();
+        final AtomicLong supportSearch = new AtomicLong(getUserProviders().size());
+        final Set<String> result = getUserProviders().parallelStream()
+            .map(userProvider -> {
+                try {
+                    return userProvider.getSearchFields();
+                } catch ( UnsupportedOperationException uoe ) {
+                    supportSearch.decrementAndGet();
+                    return new HashSet<String>();
+                }
+            })
+            .flatMap(Collection::stream)
+            .collect(Collectors.toSet());
 
-        // TODO Make calls concurrent for improved throughput.
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            try
-            {
-                result.addAll( provider.getSearchFields() );
-            }
-            catch ( UnsupportedOperationException uoe )
-            {
-                Log.warn( "getSearchFields is not supported by this UserProvider: " + provider.getClass().getName() );
-                supportSearch--;
-            }
-        }
-
-        if ( supportSearch == 0 )
+        if (supportSearch.longValue() == 0)
         {
             throw new UnsupportedOperationException( "None of the backing providers support this operation." );
         }
@@ -314,17 +325,9 @@ public abstract class UserMultiProvider implements UserProvider
     @Override
     public boolean isReadOnly()
     {
-        // TODO Make calls concurrent for improved throughput.
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            // If at least one provider is not readonly, neither is this proxy.
-            if ( !provider.isReadOnly() )
-            {
-                return false;
-            }
-        }
-
-        return true;
+        // If at least one provider is not readonly, neither is this proxy.
+        return getUserProviders().parallelStream()
+            .allMatch(UserProvider::isReadOnly);
     }
 
     /**
@@ -336,38 +339,118 @@ public abstract class UserMultiProvider implements UserProvider
     @Override
     public boolean isNameRequired()
     {
-        // TODO Make calls concurrent for improved throughput.
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            // If at least one provider does not require a name, neither is this proxy.
-            if ( !provider.isNameRequired() )
-            {
-                return false;
-            }
-        }
-
-        return true;
+        // If at least one provider does not require a name, neither is this proxy.
+        return getUserProviders().parallelStream()
+            .anyMatch(UserProvider::isNameRequired);
     }
 
     /**
      * Returns whether <em>all</em> backing providers require an email address to be set on User objects. If at least
-     * one proivder does not, this method returns false.
+     * one provider does not, this method returns false.
      *
      * @return true when all backing providers require an email address to be set on User objects, otherwise false.
      */
     @Override
     public boolean isEmailRequired()
     {
-        // TODO Make calls concurrent for improved throughput.
-        for ( final UserProvider provider : getUserProviders() )
-        {
-            // If at least one provider does not require an email, neither is this proxy.
-            if ( !provider.isEmailRequired() )
-            {
-                return false;
-            }
+        // If at least one provider does not require an email, neither is this proxy.
+        return getUserProviders().parallelStream()
+            .anyMatch(UserProvider::isEmailRequired);
+    }
+
+    @Override
+    public User loadUser(String username) throws UserNotFoundException
+    {
+        final UserProvider userProvider;
+        try {
+            userProvider = getUserProvider( username );
+        } catch (RuntimeException e){
+            throw new UserNotFoundException("Unable to identify user provider for username " + username, e);
+        }
+        return userProvider.loadUser( username );
+    }
+
+    @Override
+    public User createUser(String username, String password, String name, String email) throws UserAlreadyExistsException
+    {
+        return getUserProvider(username).createUser(username, password, name, email);
+    }
+
+    /**
+     * Removes a user from all non-read-only providers.
+     *
+     * @param username the username to delete.
+     */
+    @Override
+    public void deleteUser(String username)
+    {
+        // all providers are read-only
+        if (isReadOnly()) {
+            throw new UnsupportedOperationException();
         }
 
-        return true;
+        for (final UserProvider provider : getUserProviders())
+        {
+            if (provider.isReadOnly()) {
+                continue;
+            }
+            provider.deleteUser(username);
+        }
+    }
+
+    /**
+     * Changes the creation date of a user in the first provider that contains the user.
+     *
+     * @param username the identifier of the user.
+     * @param creationDate the date the user was created.
+     * @throws UserNotFoundException when the user was not found in any provider.
+     * @throws UnsupportedOperationException when the provider is read-only.
+     */
+    @Override
+    public void setCreationDate(String username, Date creationDate) throws UserNotFoundException
+    {
+        getUserProvider(username).setCreationDate(username, creationDate);
+    }
+
+    /**
+     * Changes the modification date of a user in the first provider that contains the user.
+     *
+     * @param username the identifier of the user.
+     * @param modificationDate the date the user was (last) modified.
+     * @throws UserNotFoundException when the user was not found in any provider.
+     * @throws UnsupportedOperationException when the provider is read-only.
+     */
+    @Override
+    public void setModificationDate(String username, Date modificationDate) throws UserNotFoundException
+    {
+        getUserProvider(username).setModificationDate(username, modificationDate);
+    }
+
+    /**
+     * Changes the full name of a user in the first provider that contains the user.
+     *
+     * @param username the identifier of the user.
+     * @param name the new full name a user.
+     * @throws UserNotFoundException when the user was not found in any provider.
+     * @throws UnsupportedOperationException when the provider is read-only.
+     */
+    @Override
+    public void setName(String username, String name) throws UserNotFoundException
+    {
+        getUserProvider(username).setEmail(username, name);
+    }
+
+    /**
+     * Changes the email address of a user in the first provider that contains the user.
+     *
+     * @param username the identifier of the user.
+     * @param email the new email address of a user.
+     * @throws UserNotFoundException when the user was not found in any provider.
+     * @throws UnsupportedOperationException when the provider is read-only.
+     */
+    @Override
+    public void setEmail(String username, String email) throws UserNotFoundException
+    {
+        getUserProvider(username).setEmail(username, email);
     }
 }

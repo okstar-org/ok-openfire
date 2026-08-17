@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2018-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2018-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -69,7 +69,7 @@
     {
         final TrustStore trustStoreConfig = XMPPServer.getInstance().getCertificateStoreManager().getTrustStore( connectionType );
 
-        if (alias == null || "".equals(alias))
+        if (alias == null || alias.isEmpty())
         {
             errors.put("missingalias", "missingalias");
         }
@@ -78,7 +78,7 @@
             // Verify that the provided alias is not already available
             errors.put("existingalias", "existingalias");
         }
-        if (certificate == null || "".equals(certificate))
+        if (certificate == null || certificate.isEmpty())
         {
             errors.put("certificate", "certificate-missing");
         }
@@ -89,7 +89,8 @@
             {
                 // When updating certificates through the admin console, do not immediately restart the website, as that
                 // is very likely to lock out the administrator that is performing the changes.
-                ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).pauseAutoRestartEnabled(Duration.ofMinutes(5));
+                XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin")
+                    .ifPresent(plugin -> ((AdminConsolePlugin) plugin).pauseAutoRestartEnabled(Duration.ofMinutes(5)));
 
                 // Import certificate
                 trustStoreConfig.installCertificate( alias, certificate );

@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -20,6 +20,9 @@
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
 <%@ taglib prefix="admin" uri="admin" %>
 
+<%@ page import="java.util.concurrent.Future" %>
+<%@ page import="java.util.concurrent.TimeUnit" %>
+<%@ page import="java.util.concurrent.TimeoutException" %>
 <%@ page import="org.jivesoftware.database.DbConnectionManager" %>
 <%@ page import="org.jivesoftware.openfire.XMPPServer" %>
 <%@ page import="org.jivesoftware.openfire.cluster.ClusterManager" errorPage="error.jsp" %>
@@ -37,7 +40,6 @@
 <%@ page import="java.text.DecimalFormat" %>
 <%@ page import="org.jivesoftware.openfire.cluster.ClusterEventListener" %>
 <%@ page import="java.util.concurrent.Semaphore" %>
-<%@ page import="java.util.concurrent.TimeUnit" %>
 <%@ page import="org.jivesoftware.openfire.cluster.NodeID" %>
 <%@ page import="com.google.common.collect.Table" %>
 <%@ page import="com.google.common.collect.HashBasedTable" %>
@@ -161,10 +163,32 @@
     final List<ClusterNodeInfo> clusterNodesInfo = new ArrayList<>(ClusterManager.getNodesInfo());
     // Sort them so they are always consistent in order
     clusterNodesInfo.sort(Comparator.comparing(ClusterNodeInfo::getHostName));
-    // Get some basic statistics from the cluster nodes
-    // TODO Set a timeout so the page can load fast even if a node is taking too long to answer
-    Collection<Map<String, Object>> statistics =
-            CacheFactory.doSynchronousClusterTask(new GetBasicStatistics(), true);
+    // Get some basic statistics from the cluster nodes.
+    // Limit the request to 3 seconds so the page can still load quickly if a node is slow to answer;
+    // if the request times out or otherwise fails, fall back to an empty result set.
+    Collection<Map<String, Object>> statistics;
+
+    try {
+        Future<Collection<Map<String, Object>>> future =
+            org.jivesoftware.util.TaskEngine.getInstance().submit(() ->
+                CacheFactory.doSynchronousClusterTask(new GetBasicStatistics(), true)
+            );
+
+        statistics = future.get(3, TimeUnit.SECONDS);
+
+    } catch (TimeoutException e) {
+        LOGGER.warn("Cluster statistics request timed out", e);
+        statistics = Collections.emptyList();
+
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        LOGGER.warn("Cluster statistics request was interrupted", e);
+        statistics = Collections.emptyList();
+
+    } catch (Exception e) {
+        LOGGER.error("Failed to retrieve cluster statistics", e);
+        statistics = Collections.emptyList();
+    }
     // Calculate percentages
     int clients = 0;
     int incoming = 0;
@@ -360,12 +384,12 @@
             %>
               <tr class="<%= (isLocalMember ? "local" : "") %>" style="vertical-align: middle">
                   <td style="width: 1%; text-align: center">
-                      <a href="plugins/<%= CacheFactory.getPluginName() %>/system-clustering-node.jsp?UID=<%= URLEncoder.encode(nodeID, StandardCharsets.UTF_8.name()) %>"
+                      <a href="plugins/<%= CacheFactory.getPluginName() %>/system-clustering-node.jsp?UID=<%= URLEncoder.encode(nodeID, StandardCharsets.UTF_8) %>"
                        title="Click for more details"
                        ><img src="images/server-network-24x24.gif" width="24" height="24" alt=""></a>
                   </td>
                   <td class="jive-description" style="width: 1%; white-space: nowrap; vertical-align: middle">
-                      <a href="plugins/<%= CacheFactory.getPluginName() %>/system-clustering-node.jsp?UID=<%= URLEncoder.encode(nodeID, StandardCharsets.UTF_8.name()) %>">
+                      <a href="plugins/<%= CacheFactory.getPluginName() %>/system-clustering-node.jsp?UID=<%= URLEncoder.encode(nodeID, StandardCharsets.UTF_8) %>">
                       <%  if (isLocalMember) { %>
                           <b><%= nodeInfo.getHostName() %></b>
                       <%  } else { %>

@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2004-2007 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2007 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -121,15 +121,15 @@
             securePort = -1;
         }
         // Continue if there were no errors
-        if (errors.size() == 0) {
-            Map<String, String> xmppSettings = new HashMap<String, String>();
+        if (errors.isEmpty()) {
+            Map<String, String> xmppSettings = new HashMap<>();
 
             xmppSettings.put(XMPPServerInfo.XMPP_DOMAIN.getKey(), domain);
             xmppSettings.put(ConnectionSettings.Client.ENABLE_OLD_SSLPORT_PROPERTY.getKey(), "" + sslEnabled);
             xmppSettings.put(AnonymousSaslServer.ENABLED.getKey(), "" + anonymousAuthentication);
             session.setAttribute("xmppSettings", xmppSettings);
 
-            Map<String, String> xmlSettings = new HashMap<String, String>();
+            Map<String, String> xmlSettings = new HashMap<>();
             xmlSettings.put("adminConsole.port", Integer.toString(embeddedPort));
             xmlSettings.put("adminConsole.securePort", Integer.toString(securePort));
             xmlSettings.put("fqdn", fqdn);
@@ -223,7 +223,7 @@
         <label for="domain"><fmt:message key="setup.host.settings.domain" /></label>
     </td>
     <td>
-        <input type="text" size="30" maxlength="150" name="domain" id="domain" value="${not empty domain ? fn:escapeXml(domain) : ''}">
+        <input type="text" size="30" maxlength="150" name="domain" id="domain" value="${fn:escapeXml(domain)}" autofocus>
         <div class="openfire-helpicon-with-tooltip"><span class="helpicon"></span><span class="tooltiptext"><fmt:message key="setup.host.settings.domain.help" /></span></div>
         <c:if test="${not empty errors['domain']}">
             <span class="jive-error-text">
@@ -237,7 +237,7 @@
         <label for="fqdn"><fmt:message key="setup.host.settings.fqdn" /></label>
     </td>
     <td>
-        <input type="text" size="30" maxlength="150" name="fqdn" id="fqdn" value="${not empty fqdn ? fn:escapeXml(fqdn) : ''}">
+        <input type="text" size="30" maxlength="150" name="fqdn" id="fqdn" value="${fn:escapeXml(fqdn)}">
         <div class="openfire-helpicon-with-tooltip"><span class="helpicon"></span><span class="tooltiptext"><fmt:message key="setup.host.settings.fqdn.help" /></span></div>
         <c:if test="${not empty errors['fqdn']}">
         <span class="jive-error-text">
@@ -324,13 +324,6 @@
 
     </div>
     <!-- END jive-contentBox -->
-
-
-<script>
-// give focus to domain field
-document.f.domain.focus();
-</script>
-
 
 </body>
 </html>

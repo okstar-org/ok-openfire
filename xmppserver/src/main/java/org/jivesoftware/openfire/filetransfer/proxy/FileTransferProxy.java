@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999-2008 Jive Software, 2016-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 1999-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ import java.net.UnknownHostException;
 import java.util.*;
 
 /**
- * Manages the transfering of files between two remote entities on the jabber network.
+ * Manages the transferring of files between two remote entities on the jabber network.
  * This class acts independently as a Jabber component from the rest of the server, according to
  * the Jabber <a href="http://www.jabber.org/jeps/jep-0065.html">SOCKS5 bytestreams protocol</a>.
  *
@@ -54,7 +54,7 @@ public class FileTransferProxy extends BasicModule
     private static final Logger Log = LoggerFactory.getLogger( FileTransferProxy.class);
 
     /**
-     * The JiveProperty relating to whether or not the file treansfer proxy is enabled.
+     * The JiveProperty relating to whether or not the file transfer proxy is enabled.
      */
     public static final String JIVEPROPERTY_PROXY_ENABLED = "xmpp.proxy.enabled";
 
@@ -372,7 +372,7 @@ public class FileTransferProxy extends BasicModule
 
     @Override
     public Set<DataForm> getExtendedInfos(String name, String node, JID senderJID) {
-        return new HashSet<DataForm>();
+        return new HashSet<>();
     }
 
     @Override
@@ -402,7 +402,7 @@ public class FileTransferProxy extends BasicModule
 
     private class FileTransferPropertyListener implements PropertyEventListener {
         @Override
-        public void propertySet(String property, Map params)
+        public void propertySet(String property, Map<String, Object> params)
         {
             if ( isEnabled() )
             {
@@ -422,7 +422,7 @@ public class FileTransferProxy extends BasicModule
         }
 
         @Override
-        public void propertyDeleted(String property, Map params) {
+        public void propertyDeleted(String property, Map<String, Object> params) {
             if(JIVEPROPERTY_PROXY_ENABLED.equalsIgnoreCase(property)) {
                 setEnabled(DEFAULT_IS_PROXY_ENABLED);
             }
@@ -439,11 +439,11 @@ public class FileTransferProxy extends BasicModule
         }
 
         @Override
-        public void xmlPropertySet(String property, Map params) {
+        public void xmlPropertySet(String property, Map<String, Object> params) {
         }
 
         @Override
-        public void xmlPropertyDeleted(String property, Map params) {
+        public void xmlPropertyDeleted(String property, Map<String, Object> params) {
         }
     }
 }

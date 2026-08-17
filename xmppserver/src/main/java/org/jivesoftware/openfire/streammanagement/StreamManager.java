@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.jivesoftware.openfire.streammanagement;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
 import org.dom4j.QName;
@@ -33,6 +34,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.*;
 
+import javax.annotation.Nonnull;
 import java.math.BigInteger;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -73,6 +75,7 @@ public class StreamManager {
 
     private final Logger Log;
     private boolean resume = false;
+
     public static class UnackedPacket {
         public final long x;
         public final Date timestamp = new Date();
@@ -126,6 +129,11 @@ public class StreamManager {
      */
     private Deque<UnackedPacket> unacknowledgedServerStanzas = new LinkedList<>();
 
+    /**
+     * Delegates that can determine if a detached session can be terminated.
+     */
+    private final Set<TerminationDelegate> terminationDelegates = new HashSet<>();
+
     public StreamManager(LocalSession session) {
         String address;
         try {
@@ -175,7 +183,17 @@ public class StreamManager {
                 enable( element.getNamespace().getStringValue(), resume );
                 break;
             case "resume":
-                long h = new Long(element.attributeValue("h"));
+                final String hValue = element.attributeValue("h");
+                final long h;
+                try {
+                    h = Long.parseLong(hValue);
+                } catch (NumberFormatException e) {
+                    Log.warn( "Closing client session. Client sends non-numeric value for SM 'h': {}, affected session: {}", hValue, session );
+                    final StreamError error = new StreamError( StreamError.Condition.undefined_condition, "You acknowledged stanzas using a 'h' value that is not a number (which is illegal). Your Ack h: " + hValue + ", our last unacknowledged stanza: " + (unacknowledgedServerStanzas.isEmpty() ? "(none)" : unacknowledgedServerStanzas.getLast().x) );
+                    session.deliverRawText( error.toXML() );
+                    session.close();
+                    return;
+                }
                 if (h < 0) {
                     Log.warn( "Closing client session. Client sends negative value for SM 'h': {}, affected session: {}", h, session );
                     final StreamError error = new StreamError( StreamError.Condition.undefined_condition, "You acknowledged stanzas using a negative value (which is illegal). Your Ack h: " + h + ", our last unacknowledged stanza: " + (unacknowledgedServerStanzas.isEmpty() ? "(none)" : unacknowledgedServerStanzas.getLast().x) );
@@ -185,12 +203,13 @@ public class StreamManager {
                 }
                 String previd = element.attributeValue("previd");
                 startResume( element.getNamespaceURI(), previd, h);
+
                 break;
             case "r":
                 sendServerAcknowledgement();
                 break;
             case "a":
-                processClientAcknowledgement( element);
+                processClientAcknowledgement(element);
                 break;
             default:
                 sendUnexpectedError();
@@ -345,6 +364,14 @@ public class StreamManager {
             return;
         }
         Log.debug("Found existing session for '{}', checking status", fullJid);
+
+        // OF-2811: Cannot resume a session that's already closed. That session is likely busy firing its 'closeListeners'.
+        if (route.isClosed()) {
+            Log.debug("Not allowing a client of '{}' to resume a session, as the preexisting session is already in process of being closed.", fullJid);
+            sendError(new PacketError(PacketError.Condition.unexpected_request));
+            return;
+        }
+
         // Previd identifies proper session. Now check SM status
         if (!otherSession.getStreamManager().resume) {
             Log.debug("Not allowing a client of '{}' to resume a session, the session to be resumed does not have the stream management resumption feature enabled.", fullJid);
@@ -371,7 +398,7 @@ public class StreamManager {
             Connection oldConnection = otherSession.getConnection();
             otherSession.setDetached();
             assert oldConnection != null; // If the other session is not detached, the connection can't be null.
-            oldConnection.close(new StreamError(StreamError.Condition.conflict, "The stream previously served over this connection is resumed on a new connection."), true);
+            oldConnection.close(new StreamError(StreamError.Condition.conflict, "The stream previously served over this connection is resumed on a new connection."));
         }
         Log.debug("Attaching to other session '{}' of '{}'.", otherSession.getStreamID(), fullJid);
         // If we're all happy, re-attach the connection from the pre-existing session to the new session, discarding the old session.
@@ -454,7 +481,7 @@ public class StreamManager {
         return validateClientAcknowledgement(h, oldH, lastUnackedX);
     }
 
-    // Package protected to facilitate unit testing.
+    @VisibleForTesting
     static boolean validateClientAcknowledgement(final long h, final long oldH, final Long lastUnackedX) {
         if (lastUnackedX == null) {
             // No unacked stanzas.
@@ -511,7 +538,17 @@ public class StreamManager {
     private void processClientAcknowledgement(Element ack) {
         if(isEnabled()) {
             if (ack.attribute("h") != null) {
-                final long h = Long.valueOf(ack.attributeValue("h"));
+                final String hValue = ack.attributeValue("h");
+                final long h;
+                try {
+                    h = Long.parseLong(hValue);
+                } catch (NumberFormatException e) {
+                    Log.warn( "Closing client session. Client sends non-numeric value for SM 'h': {}, affected session: {}", hValue, session );
+                    final StreamError error = new StreamError( StreamError.Condition.undefined_condition, "You acknowledged stanzas using a 'h' value that is not a number (which is illegal). Your Ack h: " + hValue + ", our last unacknowledged stanza: " + (unacknowledgedServerStanzas.isEmpty() ? "(none)" : unacknowledgedServerStanzas.getLast().x) );
+                    session.deliverRawText( error.toXML() );
+                    session.close();
+                    return;
+                }
                 if (h < 0) {
                     Log.warn( "Closing client session. Client sends negative value for SM 'h': {}, affected session: {}", h, session );
                     final StreamError error = new StreamError( StreamError.Condition.undefined_condition, "You acknowledged stanzas using a negative value (which is illegal). Your Ack h: " + h + ", our last unacknowledged stanza: " + (unacknowledgedServerStanzas.isEmpty() ? "(none)" : unacknowledgedServerStanzas.getLast().x) );
@@ -668,5 +705,42 @@ public class StreamManager {
     private int getMaximumUnacknowledgedStanzas()
     {
         return JiveGlobals.getIntProperty( "stream.management.max-unacked", 10000 );
+    }
+
+    /**
+     * Returns a defensive copy of all delegates that can determine if a detached session can be terminated.
+     *
+     * @return all delegates that can determine if a detached session can be terminated.
+     */
+    public Set<TerminationDelegate> getTerminationDelegates()
+    {
+        return new HashSet<>(terminationDelegates);
+    }
+
+    /**
+     * Adds a new delegate that can determine if a detached session can be terminated. When no such delegate is
+     * registered for a session, the server default behavior will determine if a detached session can be terminated.
+     *
+     * This method will add delegates, unless the new delegate is equal to a previously registered delegate. In such
+     * case, this method will silently ignore the invocation.
+     *
+     * @param delegate the delegate to register with the session
+     */
+    public void addTerminationDelegate(@Nonnull final TerminationDelegate delegate)
+    {
+        terminationDelegates.add(delegate);
+    }
+
+    /**
+     * Removes a delegate that can determine if a detached session can be terminated. When no such delegate is
+     * registered for a session, the server default behavior will determine if a detached session can be terminated.
+     *
+     * This method will silently ignore an invocation to remove a delegate that was not registered with the session.
+     *
+     * @param delegate the delegate to register with the session
+     */
+    public void removeTerminationDelegate(@Nonnull final TerminationDelegate delegate)
+    {
+        terminationDelegates.remove(delegate);
     }
 }

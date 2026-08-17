@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -110,11 +110,11 @@ public class User implements Cacheable, Externalizable, Result {
             throw new NullPointerException("Username cannot be null");
         }
         this.username = username;
-        if (UserManager.getUserProvider().isNameRequired() && (name == null || "".equals(name.trim()))) {
+        if (UserManager.getUserProvider().isNameRequired() && (name == null || name.trim().isEmpty())) {
             throw new IllegalArgumentException("Invalid or empty name specified with provider that requires name");
         }
         this.name = name;
-        if (UserManager.getUserProvider().isEmailRequired() && (email == null || "".equals(email.trim()))) {
+        if (UserManager.getUserProvider().isEmailRequired() && (email == null || email.trim().isEmpty())) {
             throw new IllegalArgumentException("Empty email address specified with provider that requires email address. User: "
                                                 + username + " Email: " + email);
         }
@@ -157,34 +157,99 @@ public class User implements Cacheable, Externalizable, Result {
         }
     }
 
+    /**
+     * Returns the SCRAM-SHA-1 stored key for this user, or {@code null} if the user has no SCRAM-SHA-1 credential.
+     *
+     * @return the SCRAM-SHA-1 stored key, or {@code null}.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. SCRAM credentials are stored per mechanism
+     *             (see the {@code ofUserScram} table) and should be obtained through the authentication provider rather
+     *             than from the {@link User} object. Retained for backwards compatibility with third-party integrations.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public String getStoredKey() {
         return storedKey;
     }
 
+    /**
+     * Sets the SCRAM-SHA-1 stored key for this user.
+     *
+     * @param storedKey the SCRAM-SHA-1 stored key.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. See {@link #getStoredKey()}.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public void setStoredKey(String storedKey) {
         this.storedKey = storedKey;
     }
 
+    /**
+     * Returns the SCRAM-SHA-1 server key for this user, or {@code null} if the user has no SCRAM-SHA-1 credential.
+     *
+     * @return the SCRAM-SHA-1 server key, or {@code null}.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. SCRAM credentials are stored per mechanism
+     *             (see the {@code ofUserScram} table) and should be obtained through the authentication provider rather
+     *             than from the {@link User} object. Retained for backwards compatibility with third-party integrations.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public String getServerKey() {
         return serverKey;
     }
 
+    /**
+     * Sets the SCRAM-SHA-1 server key for this user.
+     *
+     * @param serverKey the SCRAM-SHA-1 server key.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. See {@link #getServerKey()}.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public void setServerKey(String serverKey) {
         this.serverKey = serverKey;
     }
 
+    /**
+     * Returns the SCRAM-SHA-1 salt for this user, or {@code null} if the user has no
+     * SCRAM-SHA-1 credential.
+     *
+     * @return the SCRAM-SHA-1 salt, or {@code null}.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. SCRAM credentials are stored per mechanism
+     *             (see the {@code ofUserScram} table) and should be obtained through the authentication provider rather
+     *             than from the {@link User} object. Retained for backwards compatibility with third-party integrations.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public String getSalt() {
         return salt;
     }
 
+    /**
+     * Sets the SCRAM-SHA-1 salt for this user.
+     *
+     * @param salt the SCRAM-SHA-1 salt.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. See {@link #getSalt()}.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public void setSalt(String salt) {
         this.salt = salt;
     }
 
+    /**
+     * Returns the SCRAM-SHA-1 iteration count for this user, or {@code 0} if the user has no SCRAM-SHA-1 credential.
+     *
+     * @return the SCRAM-SHA-1 iteration count, or {@code 0}.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. SCRAM credentials are stored per mechanism
+     *             (see the {@code ofUserScram} table) and should be obtained through the authentication provider rather
+     *             than from the {@link User} object. Retained for backwards compatibility with third-party integrations.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public int getIterations() {
         return iterations;
     }
 
+    /**
+     * Sets the SCRAM-SHA-1 iteration count for this user.
+     *
+     * @param iterations the SCRAM-SHA-1 iteration count.
+     * @deprecated This accessor exposes only the SCRAM-SHA-1 credential. See {@link #getIterations()}.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.3.0
     public void setIterations(int iterations) {
         this.iterations = iterations;
     }
@@ -229,7 +294,7 @@ public class User implements Cacheable, Externalizable, Result {
      * @return true if name is visible to everyone, false if not.
      */
     public boolean isNameVisible() {
-        return !getProperties().containsKey(NAME_VISIBLE_PROPERTY) || Boolean.valueOf(getProperties().get(NAME_VISIBLE_PROPERTY));
+        return !getProperties().containsKey(NAME_VISIBLE_PROPERTY) || Boolean.parseBoolean(getProperties().get(NAME_VISIBLE_PROPERTY));
     }
 
     /**
@@ -285,7 +350,7 @@ public class User implements Cacheable, Externalizable, Result {
      * @return true if email is visible to everyone, false if not.
      */
     public boolean isEmailVisible() {
-        return !getProperties().containsKey(EMAIL_VISIBLE_PROPERTY) || Boolean.valueOf(getProperties().get(EMAIL_VISIBLE_PROPERTY));
+        return !getProperties().containsKey(EMAIL_VISIBLE_PROPERTY) || Boolean.parseBoolean(getProperties().get(EMAIL_VISIBLE_PROPERTY));
     }
 
     /**
@@ -484,24 +549,28 @@ public class User implements Cacheable, Externalizable, Result {
 
         @Override
         public Iterator<Map.Entry<String, String>> iterator() {
-            return new Iterator<Map.Entry<String, String>>() {
+            return new Iterator<>()
+            {
 
                 Iterator<Map.Entry<String, String>> iter = properties.entrySet().iterator();
-                Map.Entry<String,String> current = null;
+                Map.Entry<String, String> current = null;
 
                 @Override
-                public boolean hasNext() {
+                public boolean hasNext()
+                {
                     return iter.hasNext();
                 }
 
                 @Override
-                public Map.Entry<String, String> next() {
+                public Map.Entry<String, String> next()
+                {
                     current = iter.next();
                     return current;
                 }
 
                 @Override
-                public void remove() {
+                public void remove()
+                {
                     if (current == null) {
                         throw new IllegalStateException();
                     }
@@ -510,13 +579,13 @@ public class User implements Cacheable, Externalizable, Result {
                         UserManager.getUserPropertyProvider().deleteProperty(username, key);
                         iter.remove();
                         // Fire event.
-                        Map<String,Object> params = new HashMap<>();
+                        Map<String, Object> params = new HashMap<>();
                         params.put("type", "propertyDeleted");
                         params.put("propertyKey", key);
                         UserEventDispatcher.dispatchEvent(User.this,
-                                                          UserEventDispatcher.EventType.user_modified, params);
-                    } catch (UserNotFoundException e ) {
-                        Log.error( "Unable to delete property for user " + username, e );
+                            UserEventDispatcher.EventType.user_modified, params);
+                    } catch (UserNotFoundException e) {
+                        Log.error("Unable to delete property for user " + username, e);
                     }
                 }
             };

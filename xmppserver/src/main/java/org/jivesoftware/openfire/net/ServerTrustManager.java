@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 package org.jivesoftware.openfire.net;
 
-import org.jivesoftware.openfire.session.ConnectionSettings;
-import org.jivesoftware.util.JiveGlobals;
+import org.jivesoftware.openfire.XMPPServer;
+import org.jivesoftware.openfire.spi.ConnectionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,7 +36,9 @@ import java.util.Enumeration;
  * certificates or certificates of unknown issuers and manually accept them.
  *
  * @author Gaston Dombiak
+ * @deprecated Replaced by org.jivesoftware.openfire.keystore.OpenfireX509TrustManager
  */
+@Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0
 public class ServerTrustManager implements X509TrustManager {
 
     private static final Logger Log = LoggerFactory.getLogger(ServerTrustManager.class);
@@ -86,7 +88,8 @@ public class ServerTrustManager implements X509TrustManager {
 
     @Override
     public X509Certificate[] getAcceptedIssuers() {
-        if (JiveGlobals.getBooleanProperty(ConnectionSettings.Server.TLS_ACCEPT_SELFSIGNED_CERTS, false)) {
+        final boolean acceptSelfSignedCertificates = XMPPServer.getInstance().getConnectionManager().getListener(ConnectionType.SOCKET_S2S, false).acceptSelfSignedCertificates();
+        if (acceptSelfSignedCertificates) {
             // Answer an empty list since we accept any issuer
             return new X509Certificate[0];
         }
@@ -101,7 +104,7 @@ public class ServerTrustManager implements X509TrustManager {
                     X509Certs = new X509Certificate[numberOfEntry];
 
                     // Get all of the certificate alias out of the keystore.
-                    Enumeration aliases = trustStore.aliases();
+                    Enumeration<String> aliases = trustStore.aliases();
 
                     // Retrieve all of the certificates out of the keystore
                     // via the alias name.
@@ -109,7 +112,7 @@ public class ServerTrustManager implements X509TrustManager {
                     while (aliases.hasMoreElements()) {
                         X509Certs[i] =
                                 (X509Certificate) trustStore.
-                                        getCertificate((String) aliases.nextElement());
+                                        getCertificate(aliases.nextElement());
                         i++;
                     }
 

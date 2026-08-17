@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2021 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package org.jivesoftware.openfire.muc.spi;
 import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
 import org.dom4j.QName;
-import org.jivesoftware.openfire.muc.MUCRoom;
 import org.jivesoftware.openfire.muc.MultiUserChatService;
 import org.xmpp.forms.DataForm;
 import org.xmpp.forms.FormField;
@@ -152,7 +151,7 @@ public class IQMUCSearchHandler
         {
             if (field.getVariable().equals("name"))
             {
-                if (field.getFirstValue()!=null&&field.getFirstValue().trim().length()>0)
+                if (field.getFirstValue()!=null&& !field.getFirstValue().trim().isEmpty())
                 {
                     names.add(field.getFirstValue());
                 }
@@ -183,7 +182,7 @@ public class IQMUCSearchHandler
             if (userAmountFF != null)
             {
                 String value = userAmountFF.getFirstValue();
-                if (value != null && !"".equals(value)) {
+                if (value != null && !value.isEmpty()) {
                     numUsers = Integer.parseInt(value);
                 }
             }
@@ -192,7 +191,7 @@ public class IQMUCSearchHandler
             if (maxUsersFF != null)
             {
                 String value = maxUsersFF.getFirstValue();
-                if (value != null && !"".equals(value)) {
+                if (value != null && !value.isEmpty()) {
                     numMaxUsers = Integer.parseInt(value);
                 }
             }
@@ -238,8 +237,7 @@ public class IQMUCSearchHandler
                     }
                     else
                     {
-                        if (room.getNaturalLanguageName().toLowerCase().indexOf(
-                            name.toLowerCase()) != -1)
+                        if (room.getNaturalLanguageName().toLowerCase().contains(name.toLowerCase()))
                         {
                             find = true;
                             break;
@@ -248,9 +246,8 @@ public class IQMUCSearchHandler
                 }
             }
 
-            if (subject != null && subject.trim().length()>0
-                    && room.getSubject().toLowerCase().indexOf(
-                        subject.toLowerCase()) != -1)
+            if (subject != null && !subject.trim().isEmpty()
+                    && room.getSubject().toLowerCase().contains(subject.toLowerCase()))
             {
                 find = true;
             }
@@ -368,7 +365,7 @@ public class IQMUCSearchHandler
      */
     private static List<MUCRoomSearchInfo> sortByUserAmount(List<MUCRoomSearchInfo> mucs)
     {
-        Collections.sort(mucs, (o1, o2) -> o2.getOccupantsCount() - o1.getOccupantsCount());
+        mucs.sort((o1, o2) -> o2.getOccupantsCount() - o1.getOccupantsCount());
 
         return mucs;
     }

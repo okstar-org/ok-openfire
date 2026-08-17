@@ -25,13 +25,14 @@ import java.security.cert.*;
 import java.security.cert.Certificate;
 import java.util.*;
 
+import static org.jivesoftware.openfire.session.ConnectionSettings.Server.REVOCATION_CHECK_ONLY_END_ENTITY;
+import static org.jivesoftware.openfire.session.ConnectionSettings.Server.REVOCATION_SOFT_FAIL;
+
 /**
  * A Trust Manager implementation that adds Openfire-proprietary functionality.
  * 
  * @author Guus der Kinderen, guus.der.kinderen@gmail.com
  */
-// TODO re-enable optional OCSP checking.
-// TODO re-enable CRL checking.
 public class OpenfireX509TrustManager implements X509TrustManager
 {
     private static final Logger Log = LoggerFactory.getLogger( OpenfireX509TrustManager.class );
@@ -56,15 +57,21 @@ public class OpenfireX509TrustManager implements X509TrustManager
     private final boolean checkValidity;
 
     /**
+     * A boolean that indicates if this trust manager will check revocation status of certificates.
+     */
+    private final boolean checkRevocation;
+
+    /**
      * The set of trusted issuers from the trust store. Note that these certificates are not validated. It is assumed
      * that this set can be long-lived. Time-based validation should occur close to the actual usage / invocation.
      */
     protected final Set<X509Certificate> trustedIssuers;
 
-    public OpenfireX509TrustManager( KeyStore trustStore, boolean acceptSelfSigned, boolean checkValidity ) throws NoSuchAlgorithmException, KeyStoreException
+    public OpenfireX509TrustManager( KeyStore trustStore, boolean acceptSelfSigned, boolean checkValidity, boolean checkRevocation ) throws NoSuchAlgorithmException, KeyStoreException
     {
         this.acceptSelfSigned = acceptSelfSigned;
         this.checkValidity = checkValidity;
+        this.checkRevocation = checkRevocation;
 
         // Retrieve all trusted certificates from the store, but don't validate them just yet!
         final Set<X509Certificate> trusted = new HashSet<>();
@@ -85,7 +92,7 @@ public class OpenfireX509TrustManager implements X509TrustManager
 
         trustedIssuers = Collections.unmodifiableSet( trusted );
 
-        Log.debug( "Constructed trust manager. Number of trusted issuers: {}, accepts self-signed: {}, checks validity: {}", trustedIssuers.size(), acceptSelfSigned, checkValidity );
+        Log.debug( "Constructed trust manager. Number of trusted issuers: {}, accepts self-signed: {}, checks validity: {}, checks revocation: {}", trustedIssuers.size(), acceptSelfSigned, checkValidity, checkRevocation );
     }
 
     @Override
@@ -253,8 +260,8 @@ public class OpenfireX509TrustManager implements X509TrustManager
         // entire chain should now be in the store.
         parameters.addCertStore( certificates );
 
-        // When true, validation will fail if no CRLs are provided!
-        parameters.setRevocationEnabled( false );
+        // When true, validation will fail if no OCSP staple, OCSP response, or CRLs, are provided
+        parameters.setRevocationEnabled(checkRevocation);
 
         Log.debug( "Validating chain with {} certificates, using {} trust anchors.", chain.length, trustAnchors.size() );
 
@@ -268,6 +275,31 @@ public class OpenfireX509TrustManager implements X509TrustManager
         {
             Log.warn( "Unable to use the BC provider! Trying to use a fallback provider.", e );
             pathBuilder = CertPathBuilder.getInstance( "PKIX" );
+        }
+
+        if (checkRevocation) {
+            // Configure revocation checking - using default OCSP preference (OCSP before CRL)
+            PKIXRevocationChecker revChecker = (PKIXRevocationChecker)pathBuilder.getRevocationChecker();
+
+            EnumSet<PKIXRevocationChecker.Option> options = EnumSet.noneOf(PKIXRevocationChecker.Option.class);
+
+            // When enabled, only validates revocation status for end-entity (leaf) certificates
+            // and skips intermediate/root certificate checks. This helps avoid validation failures
+            // when Certificate Revocation Lists (CRLs) or OCSP responders are unavailable or unreachable
+            // for CA certificates in the chain.
+            if (REVOCATION_CHECK_ONLY_END_ENTITY.getValue()) {
+                options.add(PKIXRevocationChecker.Option.ONLY_END_ENTITY);
+            }
+
+            // Allow validation to continue if revocation information is unavailable, if configured
+            // This prevents failures when OCSP/CRL servers are unreachable or when revocation
+            // information isn't available for some certificates
+            if (REVOCATION_SOFT_FAIL.getValue()) {
+                options.add(PKIXRevocationChecker.Option.SOFT_FAIL);
+            }
+
+            revChecker.setOptions(options);
+            parameters.addCertPathChecker(revChecker);
         }
 
         try

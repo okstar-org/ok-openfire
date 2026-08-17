@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2006-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2006-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -19,19 +19,18 @@
 <%@ page import="org.jivesoftware.util.ParamUtils, org.jivesoftware.openfire.ldap.LdapManager, org.jivesoftware.openfire.user.UserNotFoundException, org.xmpp.packet.JID" %>
 <%@ page import="java.util.Map" %>
 <%@ page import="java.net.URLDecoder" %>
-<%@ page import="org.jivesoftware.util.CookieUtils" %>
 <%@ page import="javax.naming.ldap.Rdn" %>
 <%@ page import="org.jivesoftware.util.StringUtils" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
 <%@ taglib uri="admin" prefix="admin"%>
 
 <%
-    String username = URLDecoder.decode( ParamUtils.getParameter( request, "username"), "UTF-8" );
+    String username = URLDecoder.decode( ParamUtils.getParameter( request, "username"), StandardCharsets.UTF_8);
     String password = ParamUtils.getParameter(request, "password");
-    boolean ldap = "true".equals(request.getParameter("ldap"));
-
+    boolean ldap = ParamUtils.getBooleanParameter(request, "ldap");
     if (!ldap) {
         return;
     }
@@ -54,7 +53,7 @@
     Map<String, String> userSettings =
             (Map<String, String>) session.getAttribute("ldapUserSettings");
     // Run the test if password was provided and we have the ldap information
-    if (errorDetail.equals( "" ) && settings != null && password != null) {
+    if (errorDetail.isEmpty() && settings != null && password != null) {
         LdapManager manager = new LdapManager(settings);
         manager.setUsernameField(userSettings.get("ldap.usernameField"));
         manager.setSearchFilter(userSettings.get("ldap.searchFilter"));

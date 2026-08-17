@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,7 +81,7 @@ class IQMUCRegisterHandler {
             }
             else if (!room.isRegistrationEnabled() ||
                      (packet.getFrom() != null &&
-                      MUCRole.Affiliation.outcast == room.getAffiliation(packet.getFrom().asBareJID()))) {
+                      Affiliation.outcast == room.getAffiliation(packet.getFrom().asBareJID()))) {
                 // The room does not accept users to register or
                 // the user is an outcast and is not allowed to register
                 reply = IQ.createResultIQ(packet);
@@ -135,7 +135,7 @@ class IQMUCRegisterHandler {
 
                 final FormField fieldFaq = registrationForm.addField();
                 fieldFaq.setVariable("muc#register_faqentry");
-                fieldFaq.setType(FormField.Type.text_single);
+                fieldFaq.setType(FormField.Type.text_multi);
                 fieldFaq.setLabel(LocaleUtils.getLocalizedString("muc.form.reg.faqentry", preferredLocale));
 
                 // Create the probeResult and add the registration form
@@ -147,18 +147,8 @@ class IQMUCRegisterHandler {
                     ElementUtil.setProperty(currentRegistration, "query.registered", null);
                     currentRegistration.addElement("username").addText(nickname);
 
-                    Element form = currentRegistration.element(QName.get("x", "jabber:x:data"));
-                    currentRegistration.remove(form);
-        //                @SuppressWarnings("unchecked")
-        //				Iterator<Element> fields = form.elementIterator("field");
-        //
-        //                Element field;
-        //                while (fields.hasNext()) {
-        //                    field = fields.next();
-        //                    if ("muc#register_roomnick".equals(field.attributeValue("var"))) {
-        //                        field.addElement("value").addText(nickname);
-        //                    }
-        //                }
+                    currentRegistration.elements(QName.get("x", "jabber:x:data"))
+                        .forEach(currentRegistration::remove);
                     reply.setChildElement(currentRegistration);
                 }
                 else {
@@ -176,7 +166,7 @@ class IQMUCRegisterHandler {
 
                     if (ElementUtil.includesProperty(iq, "query.remove")) {
                         // The user is deleting his registration
-                        presences.addAll(room.addNone(packet.getFrom(), room.getSelfRepresentation()));
+                        presences.addAll(room.addNone(packet.getFrom(), room.getSelfRepresentation().getAffiliation()));
                     }
                     else {
                         // The user is trying to register with a room
@@ -197,7 +187,7 @@ class IQMUCRegisterHandler {
                             // Add the new member to the members list
                             presences.addAll(room.addMember(packet.getFrom(),
                                     nickname,
-                                    room.getSelfRepresentation()));
+                                    room.getSelfRepresentation().getAffiliation()));
                         }
                         else {
                             reply.setChildElement(packet.getChildElement().createCopy());

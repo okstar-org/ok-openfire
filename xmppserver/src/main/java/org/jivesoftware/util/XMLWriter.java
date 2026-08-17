@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2006 Jive Software, 2017-2020 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2006 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -1004,10 +1004,10 @@ public class XMLWriter extends XMLFilterImpl implements LexicalHandler {
      */
     protected void writeNamespaces() throws IOException {
         if ( namespacesMap != null ) {
-            for ( Iterator iter = namespacesMap.entrySet().iterator(); iter.hasNext(); ) {
-                Map.Entry entry = (Map.Entry) iter.next();
-                String prefix = (String) entry.getKey();
-                String uri = (String) entry.getValue();
+            for ( Iterator<Map.Entry<String, String>> iter = namespacesMap.entrySet().iterator(); iter.hasNext(); ) {
+                Map.Entry<String, String> entry = iter.next();
+                String prefix = entry.getKey();
+                String uri = entry.getValue();
                 writeNamespace(prefix, uri);
             }
             namespacesMap = null;
@@ -1021,7 +1021,7 @@ public class XMLWriter extends XMLFilterImpl implements LexicalHandler {
      * @throws IOException if the namespace could not be written
      */
     protected void writeNamespace(String prefix, String uri) throws IOException {
-        if ( prefix != null && prefix.length() > 0 ) {
+        if ( prefix != null && !prefix.isEmpty()) {
             writer.write(" xmlns:");
             writer.write(prefix);
             writer.write("=\"");
@@ -1046,7 +1046,7 @@ public class XMLWriter extends XMLFilterImpl implements LexicalHandler {
     }
 
     protected void writeString(String text) throws IOException {
-        if ( text != null && text.length() > 0 ) {
+        if ( text != null && !text.isEmpty()) {
             if ( escapeText ) {
                 text = escapeElementEntities(text);
             }
@@ -1090,7 +1090,7 @@ public class XMLWriter extends XMLFilterImpl implements LexicalHandler {
      */
     protected void writeNodeText(Node node) throws IOException {
         String text = node.getText();
-        if (text != null && text.length() > 0) {
+        if (text != null && !text.isEmpty()) {
             if (escapeText) {
                 text = escapeElementEntities(text);
             }
@@ -1165,13 +1165,13 @@ public class XMLWriter extends XMLFilterImpl implements LexicalHandler {
 
         writer.write("<!DOCTYPE ");
         writer.write(name);
-        if ((publicID != null) && (!publicID.equals(""))) {
+        if ((publicID != null) && (!publicID.isEmpty())) {
             writer.write(" PUBLIC \"");
             writer.write(publicID);
             writer.write("\"");
             hasPublic = true;
         }
-        if ((systemID != null) && (!systemID.equals(""))) {
+        if ((systemID != null) && (!systemID.isEmpty())) {
             if (!hasPublic) {
                 writer.write(" SYSTEM");
             }
@@ -1296,7 +1296,7 @@ public class XMLWriter extends XMLFilterImpl implements LexicalHandler {
 
     protected void indent() throws IOException {
         String indent = format.getIndent();
-        if ( indent != null && indent.length() > 0 ) {
+        if ( indent != null && !indent.isEmpty()) {
             for ( int i = 0; i < indentLevel; i++ ) {
                 writer.write(indent);
             }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 1999-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -87,7 +87,10 @@ public class ProxyConnectionManager {
         .setDynamic(false)
         .build();
 
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
     private static final String proxyTransferRate = "proxyTransferRate";
+
+    private static final String proxyTransferAmount = "proxy_transfer_amt";
 
     private Cache<String, ProxyTransfer> connectionMap;
 
@@ -132,6 +135,7 @@ public class ProxyConnectionManager {
 
         transferManager = manager;
         StatisticsManager.getInstance().addStatistic(proxyTransferRate, new ProxyTracker());
+        StatisticsManager.getInstance().addStatistic(proxyTransferAmount, new ProxyTrackerAmount());
     }
 
     /*
@@ -145,48 +149,42 @@ public class ProxyConnectionManager {
             }
         }
         reset();
-        socketProcess = executor.submit(new Runnable() {
-            @Override
-            public void run() {
+        socketProcess = executor.submit(() -> {
+            try {
+                serverSocket = new ServerSocket(port, -1, bindInterface);
+            }
+            catch (IOException e) {
+                Log.error("Error creating server socket", e);
+                return;
+            }
+            while (serverSocket.isBound()) {
+                final Socket socket;
                 try {
-                    serverSocket = new ServerSocket(port, -1, bindInterface);
+                    socket = serverSocket.accept();
                 }
                 catch (IOException e) {
-                    Log.error("Error creating server socket", e);
-                    return;
+                    if (!serverSocket.isClosed()) {
+                        Log.error("Error accepting proxy connection", e);
+                        continue;
+                    }
+                    else {
+                        break;
+                    }
                 }
-                while (serverSocket.isBound()) {
-                    final Socket socket;
+                executor.submit(() -> {
                     try {
-                        socket = serverSocket.accept();
+                        processConnection(socket);
                     }
-                    catch (IOException e) {
-                        if (!serverSocket.isClosed()) {
-                            Log.error("Error accepting proxy connection", e);
-                            continue;
+                    catch (IOException ie) {
+                        try {
+                            Log.info("Unable to process data send through inbound connection from {} to file transfer proxy: {}", socket.getInetAddress(), ie.getMessage());
+                            socket.close();
                         }
-                        else {
-                            break;
+                        catch (IOException e) {
+                            Log.debug("An exception occurred while trying to close a socket after processing data delivered by it caused an exception.", e);
                         }
                     }
-                    executor.submit(new Runnable() {
-                        @Override
-                        public void run() {
-                            try {
-                                processConnection(socket);
-                            }
-                            catch (IOException ie) {
-                                try {
-                                    Log.info("Unable to process data send through inbound connection from {} to file transfer proxy: {}", socket.getInetAddress(), ie.getMessage());
-                                    socket.close();
-                                }
-                                catch (IOException e) {
-                                    Log.debug("An exception occurred while trying to close a socket after processing data delivered by it caused an exception.", e);
-                                }
-                            }
-                        }
-                    });
-                }
+                });
             }
         });
         proxyPort = port;
@@ -351,27 +349,24 @@ public class ProxyConnectionManager {
         transfer.setInitiator(initiator.toString());
         transfer.setTarget(target.toString());
         transfer.setSessionID(sid);
-        transfer.setTransferFuture(executor.submit(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    transferManager.fireFileTransferStart( transfer.getSessionID(), true );
-                }
-                catch (FileTransferRejectedException e) {
-                    notifyFailure(transfer, e);
-                    return;
-                }
-                try {
-                    transfer.doTransfer();
-                    transferManager.fireFileTransferCompleted( transfer.getSessionID(), true );
-                }
-                catch (IOException e) {
-                    Log.error("Error during file transfer", e);
-                    transferManager.fireFileTransferCompleted( transfer.getSessionID(), false );
-                }
-                finally {
-                    connectionMap.remove(digest);
-                }
+        transfer.setTransferFuture(executor.submit(() -> {
+            try {
+                transferManager.fireFileTransferStart( transfer.getSessionID(), true );
+            }
+            catch (FileTransferRejectedException e) {
+                notifyFailure(transfer, e);
+                return;
+            }
+            try {
+                transfer.doTransfer();
+                transferManager.fireFileTransferCompleted( transfer.getSessionID(), true );
+            }
+            catch (IOException e) {
+                Log.error("Error during file transfer", e);
+                transferManager.fireFileTransferCompleted( transfer.getSessionID(), false );
+            }
+            finally {
+                connectionMap.remove(digest);
             }
         }));
     }
@@ -422,19 +417,59 @@ public class ProxyConnectionManager {
         }
     }
 
+    /**
+     * Replaced by {@link ProxyTrackerAmount} because of issue OF-3142.
+     */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
     private static class ProxyTracker extends i18nStatistic {
+        private double previousSample = 0;
+
         public ProxyTracker() {
             super("filetransferproxy.transfered", Statistic.Type.rate);
         }
 
         @Override
         public double sample() {
-            return (ProxyOutputStream.amountTransferred.getAndSet(0) / 1000d);
+            final double current = ProxyOutputStream.amountTransferred.get() / 1000d;
+            double delta;
+
+            synchronized (this) {
+                delta = current - previousSample;
+                previousSample = current;
+            }
+
+            return delta;
         }
 
         @Override
         public boolean isPartialSample() {
             return true;
+        }
+
+        @Override
+        public RepresentationSemantics getRepresentationSemantics() {
+            return RepresentationSemantics.RATE;
+        }
+    }
+
+    private static class ProxyTrackerAmount extends i18nStatistic {
+        public ProxyTrackerAmount() {
+            super("filetransferproxy.transfered.amount", Statistic.Type.amount);
+        }
+
+        @Override
+        public double sample() {
+            return (ProxyOutputStream.amountTransferred.get() / 1000d);
+        }
+
+        @Override
+        public boolean isPartialSample() {
+            return true;
+        }
+
+        @Override
+        public RepresentationSemantics getRepresentationSemantics() {
+            return RepresentationSemantics.RATE;
         }
     }
 }

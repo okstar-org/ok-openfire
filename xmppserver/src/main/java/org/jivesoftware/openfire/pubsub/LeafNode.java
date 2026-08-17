@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ public class LeafNode extends Node {
     /**
      * Maximum number of published items to persist. Note that all nodes are going to persist
      * their published items. The only difference is the number of the last published items
-     * to be persisted. Even nodes that are configured to not use persitent items are going
+     * to be persisted. Even nodes that are configured to not use persistent items are going
      * to save the last published item.
      */
     private int maxPublishedItems;
@@ -78,8 +78,6 @@ public class LeafNode extends Node {
      * The last item published to this node.  In a cluster this may have occurred on a different cluster node.
      */
     private transient PublishedItem lastPublished;
-
-    // TODO Add checking of max payload size. Return <not-acceptable> plus a application specific error condition of <payload-too-big/>.
 
     public LeafNode( PubSubService.UniqueIdentifier serviceId, CollectionNode parentNode, String nodeID, JID creator, boolean subscriptionEnabled, boolean deliverPayloads, boolean notifyConfigChanges, boolean notifyDelete, boolean notifyRetract, boolean presenceBasedDelivery, AccessModel accessModel, PublisherModel publisherModel, String language, ItemReplyPolicy replyPolicy, boolean persistPublishedItems, int maxPublishedItems, int maxPayloadSize, boolean sendItemSubscribe)
     {
@@ -184,7 +182,17 @@ public class LeafNode extends Node {
 
     public synchronized void setLastPublishedItem(PublishedItem item)
     {
-        if ((lastPublished == null) || (item != null) && item.getCreationDate().after(lastPublished.getCreationDate())) {
+        // Always update when:
+        // 1. There is no last-published item yet (initial state).
+        // 2. The incoming item overwrites the current last-published item (same unique identifier).
+        //    XEP-0060 §7.1.2 requires the server to replace an existing item with the same ID.
+        //    Even if both items share the same creation-date (e.g. published in the same millisecond),
+        //    the in-memory cache must reflect the new payload so that getPublishedItem() does not
+        //    serve the stale first item.
+        // 3. The incoming item is strictly newer than the current last-published item.
+        if (item != null && (lastPublished == null
+                || lastPublished.getUniqueIdentifier().equals(item.getUniqueIdentifier())
+                || item.getCreationDate().after(lastPublished.getCreationDate()))) {
             Log.trace("Set last published item to: {}", item.getID());
             lastPublished = item;
         }
@@ -252,8 +260,8 @@ public class LeafNode extends Node {
             PublishedItem newItem;
             for (Element item : itemElements) {
                 itemID = item.attributeValue("id");
-                List entries = item.elements();
-                payload = entries.isEmpty() ? null : (Element) entries.get(0);
+                List<Element> entries = item.elements();
+                payload = entries.isEmpty() ? null : entries.get(0);
                 
                 // Make sure that the published item has a unique ID if NOT assigned by publisher
                 if (itemID == null) {
@@ -288,6 +296,9 @@ public class LeafNode extends Node {
         for (NodeAffiliate affiliate : affiliatesToNotify) {
             affiliate.sendPublishedNotifications(message, event, this, newPublishedItems);
         }
+
+        // Invoke event listeners.
+        PubSubEventDispatcher.dispatchItemsPublished(this.getUniqueIdentifier(), newPublishedItems);
     }
 
     /**
@@ -387,6 +398,9 @@ public class LeafNode extends Node {
                 }
             }
         }
+
+        // Invoke event listeners.
+        PubSubEventDispatcher.dispatchItemsDeleted(this.getUniqueIdentifier(), toDelete);
     }
 
     /**

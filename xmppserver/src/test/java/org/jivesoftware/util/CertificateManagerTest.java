@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,32 +15,47 @@
  */
 package org.jivesoftware.util;
 
-import org.bouncycastle.asn1.*;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.DERIA5String;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERUTF8String;
+import org.bouncycastle.asn1.pkcs.Attribute;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.x509.Extensions;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.pkcs.PKCS10CertificationRequest;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.X500NameBuilder;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.GeneralName;
 import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.asn1.x509.OtherName;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.jivesoftware.util.cert.SANCertificateIdentityMapping;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
 import java.io.InputStream;
+import java.io.StringReader;
 import java.math.BigInteger;
+import java.net.InetAddress;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateNotYetValidException;
 import java.security.cert.X509Certificate;
+import java.time.*;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -63,7 +78,6 @@ public class CertificateManagerTest
     public static final String KEY_ALGORITHM = "RSA";
     public static final String SIGNATURE_ALGORITHM = "SHA256withRSA";
 
-    private static KeyPairGenerator keyPairGenerator;
     private static KeyPair subjectKeyPair;
     private static KeyPair issuerKeyPair;
     private static ContentSigner contentSigner;
@@ -71,7 +85,7 @@ public class CertificateManagerTest
     @BeforeAll
     public static void initialize() throws Exception
     {
-        keyPairGenerator = KeyPairGenerator.getInstance( KEY_ALGORITHM );
+        final KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(KEY_ALGORITHM);
         keyPairGenerator.initialize( KEY_SIZE );
 
         subjectKeyPair = keyPairGenerator.generateKeyPair();
@@ -80,15 +94,17 @@ public class CertificateManagerTest
     }
 
     /**
-     * {@link CertificateManager#getServerIdentities(X509Certificate)} should return:
+     * {@link CertificateManager#getServerIdentities(X509Certificate)} should return
      * <ul>
-     *     <li>the Common Name</li>
+     *     <li>explicitly not the Common Name (default configuration of Openfire should not return CN-based identities, see OF-3122)</li>
      * </ul>
-     *
+     * <p>
      * when a certificate contains:
      * <ul>
      *     <li>no other identifiers than its CommonName</li>
      * </ul>
+     *
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3122">OF-3122</a>
      */
     @Test
     public void testServerIdentitiesCommonNameOnly() throws Exception
@@ -97,11 +113,11 @@ public class CertificateManagerTest
         final String subjectCommonName = "MySubjectCommonName";
 
         final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                new X500Name( "CN=MyIssuer" ),                                          // Issuer
-                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),         // Random serial number
-                new Date( System.currentTimeMillis() - ( 1000L * 60 * 60 * 24 * 30 ) ), // Not before 30 days ago
-                new Date( System.currentTimeMillis() + ( 1000L * 60 * 60 * 24 * 99 ) ), // Not after 99 days from now
-                new X500Name( "CN=" + subjectCommonName ),                              // Subject
+                new X500Name( "CN=MyIssuer" ),                          // Issuer
+                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ), // Random serial number
+                Date.from( Instant.now().plus(Duration.ofDays(30)) ),           // Not before 30 days ago
+                Date.from( Instant.now().minus(Duration.ofDays(99)) ),          // Not after 99 days from now
+                new X500Name( "CN=" + subjectCommonName ),              // Subject
                 subjectKeyPair.getPublic()
         );
 
@@ -112,8 +128,7 @@ public class CertificateManagerTest
         final List<String> serverIdentities = CertificateManager.getServerIdentities( cert );
 
         // Verify result
-        assertEquals( 1, serverIdentities.size() );
-        assertEquals( subjectCommonName, serverIdentities.get( 0 ) );
+        assertEquals( 0, serverIdentities.size() );
     }
 
     /**
@@ -136,20 +151,25 @@ public class CertificateManagerTest
         final String subjectAltNameXmppAddr = "MySubjectAltNameXmppAddr";
 
         final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                new X500Name( "CN=MyIssuer" ),                                          // Issuer
-                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),         // Random serial number
-                new Date( System.currentTimeMillis() - ( 1000L * 60 * 60 * 24 * 30 ) ), // Not before 30 days ago
-                new Date( System.currentTimeMillis() + ( 1000L * 60 * 60 * 24 * 99 ) ), // Not after 99 days from now
-                new X500Name( "CN=" + subjectCommonName ),                              // Subject
+                new X500Name( "CN=MyIssuer" ),                          // Issuer
+                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ), // Random serial number
+                Date.from( Instant.now().plus(Duration.ofDays(30)) ),           // Not before 30 days ago
+                Date.from( Instant.now().minus(Duration.ofDays(99)) ),          // Not after 99 days from now
+                new X500Name( "CN=" + subjectCommonName ),              // Subject
                 subjectKeyPair.getPublic()
         );
 
-        final DERSequence otherName = new DERSequence( new ASN1Encodable[] { XMPP_ADDR_OID, new DERUTF8String( subjectAltNameXmppAddr ) });
+        final OtherName otherName = new OtherName(XMPP_ADDR_OID, new DERUTF8String( subjectAltNameXmppAddr ) );
         final GeneralNames subjectAltNames = new GeneralNames( new GeneralName(GeneralName.otherName, otherName ) );
         builder.addExtension( Extension.subjectAlternativeName, true, subjectAltNames );
 
         final X509CertificateHolder certificateHolder = builder.build( contentSigner );
-        final X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+        X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+
+        // FIXME: Unsure why, but without this back-and-forth, tests will fail on Java 17.
+        final String value = CertificateManager.toPemRepresentation(cert);
+        final Collection<X509Certificate> chain = CertificateManager.parseCertificates(value);
+        cert = chain.iterator().next();
 
         // Execute system under test
         final List<String> serverIdentities = CertificateManager.getServerIdentities( cert );
@@ -159,7 +179,6 @@ public class CertificateManagerTest
         assertTrue( serverIdentities.contains( subjectAltNameXmppAddr ));
         assertFalse( serverIdentities.contains( subjectCommonName ) );
     }
-
 
     /**
      * {@link CertificateManager#getServerIdentities(X509Certificate)} should return:
@@ -181,20 +200,25 @@ public class CertificateManagerTest
         final String subjectAltNameDnsSrv = "MySubjectAltNameXmppAddr";
 
         final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                new X500Name( "CN=MyIssuer" ),                                          // Issuer
-                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),         // Random serial number
-                new Date( System.currentTimeMillis() - ( 1000L * 60 * 60 * 24 * 30 ) ), // Not before 30 days ago
-                new Date( System.currentTimeMillis() + ( 1000L * 60 * 60 * 24 * 99 ) ), // Not after 99 days from now
-                new X500Name( "CN=" + subjectCommonName ),                              // Subject
+                new X500Name( "CN=MyIssuer" ),                          // Issuer
+                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ), // Random serial number
+                Date.from( Instant.now().plus(Duration.ofDays(30)) ),           // Not before 30 days ago
+                Date.from( Instant.now().minus(Duration.ofDays(99)) ),          // Not after 99 days from now
+                new X500Name( "CN=" + subjectCommonName ),              // Subject
                 subjectKeyPair.getPublic()
         );
 
-        final DERSequence otherName = new DERSequence( new ASN1Encodable[] {DNS_SRV_OID, new DERIA5String( "_xmpp-server."+subjectAltNameDnsSrv ) });
+        final OtherName otherName = new OtherName(DNS_SRV_OID, new DERIA5String( "_xmpp-server."+subjectAltNameDnsSrv ) );
         final GeneralNames subjectAltNames = new GeneralNames( new GeneralName(GeneralName.otherName, otherName ) );
         builder.addExtension( Extension.subjectAlternativeName, true, subjectAltNames );
 
         final X509CertificateHolder certificateHolder = builder.build( contentSigner );
-        final X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+        X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+
+        // FIXME: Unsure why, but without this back-and-forth, tests will fail on Java 17.
+        final String value = CertificateManager.toPemRepresentation(cert);
+        final Collection<X509Certificate> chain = CertificateManager.parseCertificates(value);
+        cert = chain.iterator().next();
 
         // Execute system under test
         final List<String> serverIdentities = CertificateManager.getServerIdentities( cert );
@@ -225,11 +249,11 @@ public class CertificateManagerTest
         final String subjectAltNameDNS = "MySubjectAltNameDNS";
 
         final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                new X500Name( "CN=MyIssuer" ),                                          // Issuer
-                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),         // Random serial number
-                new Date( System.currentTimeMillis() - ( 1000L * 60 * 60 * 24 * 30 ) ), // Not before 30 days ago
-                new Date( System.currentTimeMillis() + ( 1000L * 60 * 60 * 24 * 99 ) ), // Not after 99 days from now
-                new X500Name( "CN=" + subjectCommonName ),                              // Subject
+                new X500Name( "CN=MyIssuer" ),                          // Issuer
+                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ), // Random serial number
+                Date.from( Instant.now().plus(Duration.ofDays(30)) ),           // Not before 30 days ago
+                Date.from( Instant.now().minus(Duration.ofDays(99)) ),          // Not after 99 days from now
+                new X500Name( "CN=" + subjectCommonName ),              // Subject
                 subjectKeyPair.getPublic()
         );
 
@@ -238,7 +262,12 @@ public class CertificateManagerTest
         builder.addExtension( Extension.subjectAlternativeName, false, generalNames );
 
         final X509CertificateHolder certificateHolder = builder.build( contentSigner );
-        final X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+        X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+
+        // FIXME: Unsure why, but without this back-and-forth, tests will fail on Java 17.
+        final String value = CertificateManager.toPemRepresentation(cert);
+        final Collection<X509Certificate> chain = CertificateManager.parseCertificates(value);
+        cert = chain.iterator().next();
 
         // Execute system under test
         final List<String> serverIdentities = CertificateManager.getServerIdentities( cert );
@@ -272,15 +301,15 @@ public class CertificateManagerTest
         final String subjectAltNameDNS = "MySubjectAltNameDNS";
 
         final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                new X500Name( "CN=MyIssuer" ),                                          // Issuer
-                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),         // Random serial number
-                new Date( System.currentTimeMillis() - ( 1000L * 60 * 60 * 24 * 30 ) ), // Not before 30 days ago
-                new Date( System.currentTimeMillis() + ( 1000L * 60 * 60 * 24 * 99 ) ), // Not after 99 days from now
-                new X500Name( "CN=" + subjectCommonName ),                              // Subject
+                new X500Name( "CN=MyIssuer" ),                          // Issuer
+                BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ), // Random serial number
+                Date.from( Instant.now().plus(Duration.ofDays(30)) ),           // Not before 30 days ago
+                Date.from( Instant.now().minus(Duration.ofDays(99)) ),          // Not after 99 days from now
+                new X500Name( "CN=" + subjectCommonName ),              // Subject
                 subjectKeyPair.getPublic()
         );
 
-        final DERSequence otherName = new DERSequence( new ASN1Encodable[] { XMPP_ADDR_OID, new DERUTF8String( subjectAltNameXmppAddr ) });
+        final OtherName otherName = new OtherName(XMPP_ADDR_OID, new DERUTF8String( subjectAltNameXmppAddr ) );
         final GeneralNames subjectAltNames = new GeneralNames( new GeneralName[] {
                 new GeneralName( GeneralName.otherName, otherName ),
                 new GeneralName( GeneralName.dNSName, subjectAltNameDNS )
@@ -288,7 +317,12 @@ public class CertificateManagerTest
         builder.addExtension( Extension.subjectAlternativeName, true, subjectAltNames );
 
         final X509CertificateHolder certificateHolder = builder.build( contentSigner );
-        final X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+        X509Certificate cert = new JcaX509CertificateConverter().getCertificate( certificateHolder );
+
+        // FIXME: Unsure why, but without this back-and-forth, tests will fail on Java 17.
+        final String value = CertificateManager.toPemRepresentation(cert);
+        final Collection<X509Certificate> chain = CertificateManager.parseCertificates(value);
+        cert = chain.iterator().next();
 
         // Execute system under test
         final List<String> serverIdentities = CertificateManager.getServerIdentities( cert );
@@ -297,6 +331,326 @@ public class CertificateManagerTest
         assertEquals( 2, serverIdentities.size() );
         assertTrue( serverIdentities.contains( subjectAltNameXmppAddr ));
         assertFalse( serverIdentities.contains( subjectCommonName ) );
+    }
+
+    /**
+     * Asserts that when an IP literal is supplied as a subject alternative name to
+     * {@link CertificateManager#createX509V3Certificate(KeyPair, int, String, String, String, String, Set)},
+     * it is encoded as an {@code iPAddress} (GeneralName type 7) SAN entry rather than a
+     * {@code dNSName} (type 2) entry, while non-IP values remain {@code dNSName}.
+     *
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc5280">RFC 5280</a>
+     */
+    @Test
+    public void testGenerateCertificateWithIpAddressSAN() throws Exception
+    {
+        // Setup fixture.
+        final KeyPair keyPair = subjectKeyPair;
+        final int days = 2;
+        final String issuerCommonName = "issuer common name";
+        final String subjectCommonName = "subject common name";
+        final String domain = "domain.example.org";
+        final String ipLiteral = "198.51.100.3";
+        final String dnsName = "alternative-a.example.org";
+        final Set<String> sanNames = Stream.of( ipLiteral, dnsName ).collect( Collectors.toSet() );
+
+        // Execute system under test.
+        final X509Certificate result = CertificateManager.createX509V3Certificate( keyPair, days, issuerCommonName, subjectCommonName, domain, SIGNATURE_ALGORITHM, sanNames );
+
+        // Verify results.
+        assertNotNull( result );
+
+        final Collection<List<?>> sans = result.getSubjectAlternativeNames();
+        assertNotNull( sans, "Expected the generated certificate to contain subject alternative names (but it does not)." );
+
+        // The IP literal must appear as a type-7 (iPAddress) entry, not type-2 (dNSName).
+        assertThat( "Expected the IP literal to be encoded as an iPAddress (type 7) SAN entry (but it was not).",
+            sans, hasItem( Arrays.asList( 7, ipLiteral ) ) );
+        assertThat( "Did not expect the IP literal to be encoded as a dNSName (type 2) SAN entry (but it was).",
+            sans, not( hasItem( Arrays.asList( 2, ipLiteral ) ) ) );
+
+        // The DNS name must still appear as a type-2 (dNSName) entry.
+        assertThat( "Expected the DNS name to be encoded as a dNSName (type 2) SAN entry (but it was not).",
+            sans, hasItem( Arrays.asList( 2, dnsName ) ) );
+    }
+
+    /**
+     * Asserts that an IPv6 literal supplied as a subject alternative name is encoded as an
+     * {@code iPAddress} (GeneralName type 7) SAN entry. Note that the JDK normalises the textual
+     * representation of the address that it returns from
+     * {@link X509Certificate#getSubjectAlternativeNames()}, so this test asserts on the SAN type
+     * rather than on an exact textual match of the input.
+     *
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc5280">RFC 5280</a>
+     */
+    @Test
+    public void testGenerateCertificateWithIpv6AddressSAN() throws Exception
+    {
+        // Setup fixture.
+        final KeyPair keyPair = subjectKeyPair;
+        final int days = 2;
+        final String issuerCommonName = "issuer common name";
+        final String subjectCommonName = "subject common name";
+        final String domain = "domain.example.org";
+        final String ipv6Literal = "2001:db8::1";
+        final Set<String> sanNames = Stream.of( ipv6Literal ).collect( Collectors.toSet() );
+
+        // Execute system under test.
+        final X509Certificate result = CertificateManager.createX509V3Certificate( keyPair, days, issuerCommonName, subjectCommonName, domain, SIGNATURE_ALGORITHM, sanNames );
+
+        // Verify results.
+        assertNotNull( result );
+
+        final Collection<List<?>> sans = result.getSubjectAlternativeNames();
+        assertNotNull( sans, "Expected the generated certificate to contain subject alternative names (but it does not)." );
+
+        final Set<Integer> types = new HashSet<>();
+        for ( final List<?> san : sans ) {
+            types.add( (Integer) san.get( 0 ) );
+        }
+
+        assertTrue( types.contains( 7 ), "Expected the IPv6 literal to be encoded as an iPAddress (type 7) SAN entry (but no type-7 entry was found)." );
+        assertFalse( types.contains( 2 ), "Did not expect any dNSName (type 2) SAN entry for an IPv6-only input (but one was found)." );
+    }
+
+    /**
+     * Asserts that an {@code iPAddress} (type 7) subject alternative name survives a CSR round-trip through
+     * {@link CertificateManager#createSigningRequest(X509Certificate, PrivateKey)}: the IP SAN present on the source
+     * certificate must be reproduced in the generated signing request rather than silently discarded.
+     *
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3324">OF-3324: IP addresses are encoded as dNSName instead of iPAddress in certificate SANs</a>
+     */
+    @Test
+    public void testCreateSigningRequestPreservesIpAddressSAN() throws Exception
+    {
+        // Setup fixture: a self-signed certificate carrying an iPAddress SAN.
+        final String ipLiteral = "198.51.100.3";
+        final String dnsName = "yourdomain.example.org";
+
+        final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
+            new X500Name( "CN=MyIssuer" ),
+            BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),
+            Date.from( Instant.now().minus( Duration.ofDays( 1 ) ) ),
+            Date.from( Instant.now().plus( Duration.ofDays( 99 ) ) ),
+            new X500Name( "CN=MySubject" ),
+            subjectKeyPair.getPublic()
+        );
+
+        final GeneralNames sans = new GeneralNames( new GeneralName[] {
+            new GeneralName( GeneralName.iPAddress, ipLiteral ),
+            new GeneralName( GeneralName.dNSName, dnsName )
+        } );
+        builder.addExtension( Extension.subjectAlternativeName, false, sans );
+
+        // The CSR is signed with the subject's key, so build the cert with a matching signer.
+        final ContentSigner subjectSigner = new JcaContentSignerBuilder( SIGNATURE_ALGORITHM ).build( subjectKeyPair.getPrivate() );
+        final X509CertificateHolder holder = builder.build( subjectSigner );
+        X509Certificate cert = new JcaX509CertificateConverter().getCertificate( holder );
+
+        // FIXME: as elsewhere in this class, round-trip through PEM to avoid Java 17 parsing quirks.
+        final String pem = CertificateManager.toPemRepresentation( cert );
+        cert = CertificateManager.parseCertificates( pem ).iterator().next();
+
+        // Execute system under test.
+        final String csrPem = CertificateManager.createSigningRequest( cert, subjectKeyPair.getPrivate() );
+
+        // Verify results: parse the CSR back and extract its SAN extension.
+        assertNotNull( csrPem );
+        final Set<String> csrSanTypesAndValues = extractCsrSubjectAltNames( csrPem );
+
+        assertTrue( csrSanTypesAndValues.contains( "7:" + ipLiteral ), "Expected the IP address SAN to survive the CSR round-trip as an iPAddress (type 7) entry (but it did not). Found: " + csrSanTypesAndValues );
+        assertTrue( csrSanTypesAndValues.contains( "2:" + dnsName ), "Expected the DNS SAN to survive the CSR round-trip as a dNSName (type 2) entry (but it did not). Found: " + csrSanTypesAndValues );
+    }
+
+    /**
+     * Asserts that {@link SANCertificateIdentityMapping#mapIdentity(X509Certificate)} does NOT surface an
+     * {@code iPAddress} (type 7) subject alternative name. An IP literal is not a valid XMPP domain, so it must not be
+     * returned as an XMPP identity (used for S2S / SASL EXTERNAL comparison). DNS names on the same certificate must
+     * still be surfaced.
+     *
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3324">OF-3324: IP addresses are encoded as dNSName instead of iPAddress in certificate SANs</a>
+     */
+    @Test
+    public void testMapIdentityIgnoresIpAddressSAN() throws Exception
+    {
+        // Setup fixture.
+        final String ipLiteral = "198.51.100.3";
+        final String dnsName = "yourdomain.example.org";
+
+        final X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
+            new X500Name( "CN=MyIssuer" ),
+            BigInteger.valueOf( Math.abs( new SecureRandom().nextInt() ) ),
+            Date.from( Instant.now().minus( Duration.ofDays( 1 ) ) ),
+            Date.from( Instant.now().plus( Duration.ofDays( 99 ) ) ),
+            new X500Name( "CN=MySubject" ),
+            subjectKeyPair.getPublic()
+        );
+
+        final GeneralNames sans = new GeneralNames( new GeneralName[] {
+            new GeneralName( GeneralName.iPAddress, ipLiteral ),
+            new GeneralName( GeneralName.dNSName, dnsName )
+        } );
+        builder.addExtension( Extension.subjectAlternativeName, false, sans );
+
+        final X509CertificateHolder holder = builder.build( contentSigner );
+        X509Certificate cert = new JcaX509CertificateConverter().getCertificate( holder );
+
+        // FIXME: as elsewhere in this class, round-trip through PEM to avoid Java 17 parsing quirks.
+        final String pem = CertificateManager.toPemRepresentation( cert );
+        cert = CertificateManager.parseCertificates( pem ).iterator().next();
+
+        // Execute system under test.
+        final List<String> identities = new SANCertificateIdentityMapping().mapIdentity( cert );
+
+        // Verify results.
+        assertFalse( identities.contains( ipLiteral ), "Did not expect mapIdentity to surface the iPAddress SAN '" + ipLiteral + "' as an XMPP identity (but it did). Found: " + identities );
+        assertTrue( identities.contains( dnsName ), "Expected mapIdentity to still surface the dNSName SAN '" + dnsName + "' (but it did not). Found: " + identities );
+    }
+
+    /**
+     * Helper that parses a PEM-encoded PKCS#10 CSR and returns the subject alternative names it
+     * carries, each formatted as "{tag}:{value}" (e.g. "7:198.51.100.3", "2:example.org").
+     */
+    private static Set<String> extractCsrSubjectAltNames( String csrPem ) throws Exception
+    {
+        final Set<String> result = new HashSet<>();
+
+        final PKCS10CertificationRequest csr;
+        try ( final PEMParser parser = new PEMParser( new StringReader( csrPem ) ) )
+        {
+            csr = (PKCS10CertificationRequest) parser.readObject();
+        }
+        assertNotNull( csr, "Unable to parse the generated CSR." );
+
+        for ( final Attribute attribute : csr.getAttributes( PKCSObjectIdentifiers.pkcs_9_at_extensionRequest ) )
+        {
+            for ( final ASN1Encodable value : attribute.getAttributeValues() )
+            {
+                final Extensions extensions = Extensions.getInstance( value );
+                final GeneralNames names = GeneralNames.fromExtensions( extensions, Extension.subjectAlternativeName );
+                if ( names == null )
+                {
+                    continue;
+                }
+                for ( final GeneralName name : names.getNames() )
+                {
+                    final int tag = name.getTagNo();
+                    final String textValue;
+                    if ( tag == GeneralName.iPAddress )
+                    {
+                        // iPAddress is carried as an OCTET STRING of raw address octets.
+                        final byte[] octets = DEROctetString.getInstance( name.getName() ).getOctets();
+                        textValue = InetAddress.getByAddress( octets ).getHostAddress();
+                    }
+                    else
+                    {
+                        textValue = name.getName().toString();
+                    }
+                    result.add( tag + ":" + textValue );
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Tests a PEM generated by OpenSSL using this config file:
+     *
+     * <code>
+     * [ req ]
+     * default_bits       = 2048
+     * distinguished_name = req_distinguished_name
+     * req_extensions     = req_ext
+     * x509_extensions    = v3_ca # The main difference
+     * prompt = no
+     *
+     * [ req_distinguished_name ]
+     * C = US
+     * ST = YourState
+     * L = YourCity
+     * O = YourOrganization
+     * OU = YourUnit
+     * CN = yourdomain.com
+     *
+     * [ req_ext ]
+     * subjectAltName = @alt_names
+     *
+     * [ v3_ca ]
+     * subjectAltName = @alt_names
+     * basicConstraints = CA:TRUE
+     * keyUsage = digitalSignature, keyEncipherment
+     * extendedKeyUsage = serverAuth, clientAuth
+     *
+     * [ alt_names ]
+     * otherName.0 = 1.3.6.1.5.5.7.8.7;IA5:_xmpp-server.service.example.com
+     * otherName.1 = 1.3.6.1.5.5.7.8.7;IA5:_dns.service.example.net
+     * otherName.2 = 1.3.6.1.5.5.7.8.5;UTF8:user@example.com
+     * otherName.3 = 1.3.6.1.5.5.7.8.5;UTF8:not-a-user.example.com
+     * URI.1 = xmpp:third-one.net
+     * DNS.1 = yourdomain.com
+     * DNS.2 = anotherdomain.com
+     * IP.1 = 192.168.1.1
+     * </code>
+     *
+     * Using:
+     * <code>
+     * $ openssl req -new -key mykey.key -out mycsr.csr -config san.cnf
+     * $ openssl x509 -req -days 365 -in mycsr.csr -signkey mykey.key -out mycert.crt -extfile san.cnf -extensions v3_ca
+     * Signature ok
+     * subject=C = US, ST = YourState, L = YourCity, O = YourOrganization, OU = YourUnit, CN = yourdomain.com
+     * Getting Private key
+     * </code>
+     *
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-2904">OF-2904</a>
+     */
+    @Test
+    public void testPrebuiltPEM() throws Exception
+    {
+        // Setup test fixture.
+        final Collection<X509Certificate> chain = CertificateManager.parseCertificates(
+            """
+                -----BEGIN CERTIFICATE-----
+                MIIErTCCA5WgAwIBAgIULIC8uiTUXMHADnhPH6YH2BoFcOIwDQYJKoZIhvcNAQEL
+                BQAwezELMAkGA1UEBhMCVVMxEjAQBgNVBAgMCVlvdXJTdGF0ZTERMA8GA1UEBwwI
+                WW91ckNpdHkxGTAXBgNVBAoMEFlvdXJPcmdhbml6YXRpb24xETAPBgNVBAsMCFlv
+                dXJVbml0MRcwFQYDVQQDDA55b3VyZG9tYWluLmNvbTAeFw0yNDExMTAxNjI4MzZa
+                Fw0yNTExMTAxNjI4MzZaMHsxCzAJBgNVBAYTAlVTMRIwEAYDVQQIDAlZb3VyU3Rh
+                dGUxETAPBgNVBAcMCFlvdXJDaXR5MRkwFwYDVQQKDBBZb3VyT3JnYW5pemF0aW9u
+                MREwDwYDVQQLDAhZb3VyVW5pdDEXMBUGA1UEAwwOeW91cmRvbWFpbi5jb20wggEi
+                MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDMDg2nLepMRS6o3F5oSiP/U4yh
+                5lOWSE24VQE4R0EMbTiQ1lATIA0AbYU0MbVfu2EU+6rcyml7wSwekVBdRq/KLcvH
+                5mJjmQ25qHzJIFzxqNtUygY790job51zpOsIaFfg+MZkCdCWQK5G4qUr5bkfCKCN
+                VCiFcTi1nJo/PIP5Cx+/NCq3iFUL//Dt4+UxADUhD9mdXODIFUYGAP0IDD5hL58g
+                0IPNAAECky1fx4oSP1G0I8IYEnZ7V3RXvO82WZOlthJTtyysVTlIt6vy2cyG6WIg
+                iuBYOyl3Uf1S//TAMQwDF6oBO43EkqJqEODe4HTdMODd+72LY/4HSbikyBvRAgMB
+                AAGjggEnMIIBIzCB5gYDVR0RBIHeMIHboC4GCCsGAQUFBwgHoCIWIF94bXBwLXNl
+                cnZlci5zZXJ2aWNlLmV4YW1wbGUuY29toCYGCCsGAQUFBwgHoBoWGF9kbnMuc2Vy
+                dmljZS5leGFtcGxlLm5ldKAeBggrBgEFBQcIBaASDBB1c2VyQGV4YW1wbGUuY29t
+                oCQGCCsGAQUFBwgFoBgMFm5vdC1hLXVzZXIuZXhhbXBsZS5jb22GEnhtcHA6dGhp
+                cmQtb25lLm5ldIIOeW91cmRvbWFpbi5jb22CEWFub3RoZXJkb21haW4uY29thwTA
+                qAEBMAwGA1UdEwQFMAMBAf8wCwYDVR0PBAQDAgWgMB0GA1UdJQQWMBQGCCsGAQUF
+                BwMBBggrBgEFBQcDAjANBgkqhkiG9w0BAQsFAAOCAQEADrekbzSNviLTvI8DXqBD
+                JnNPPS98nzWgABscB5Xups+G7Jrj4aibNHonePXW8B6rOqEYeBBbIzCYRRRPbuGl
+                kqksCmGa0/CWYX0uf4RoLaGy5BzZndJWYNPe/Hj5GbyLbFCFNyBOMDz0NyrwfVoH
+                Yq0W2rkve2SWKp7iiiUc80qKj4tcTX25x5h8oLgv7Lh4OAGKXFr6TYk23wdDPjiC
+                zZlXLN8TFw+RT7LQQc/Xi8XC/1ULbLalTEwh/xIaKju5P5CBTZO9xnVDc9LJ3hww
+                TN04BDlf3U02OCoSr0SxiLmmDRJOLbzGJK2AEQPpHUM5URcd98Tf2GzyUvxfhHUc
+                7A==
+                -----END CERTIFICATE-----""");
+        final SANCertificateIdentityMapping mapper = new SANCertificateIdentityMapping();
+
+        // Execute system under test.
+        final List<String> result = mapper.mapIdentity(chain.iterator().next());
+
+        // Verify results
+        assertTrue(result.contains("service.example.com"), "Expected the to contain 'service.example.com', as the certificate contains an id-on-dnsSRV OtherName entry with value '_xmpp-server.service.example.com'");
+        assertFalse(result.contains("service.example.net"), "Didn't expect the result to contain 'service.example.net. Although the certificate contains an id-on-dnsSRV OtherName entry with value '_dns.service.example.net', it service is not of an XMPP-type (but rather, DNS).");
+        assertTrue(result.contains("user@example.com"), "Expected the result to contain 'user@example.com', as the certificate contains that value in an id-on-xmppAddr OtherName entry.");
+        assertTrue(result.contains("not-a-user.example.com"), "Expected the result to contain 'not-a-user.example.com', as the certificate contains that value in an id-on-xmppAddr OtherName entry.");
+        assertFalse(result.contains("third-one.net"), "Didn't expect the result to contain 'third-one.net, which is provided in an URI entry in the certificate. URI entries are not defined as a valid source for JIDs in a certificate by RFC6120.");
+        assertTrue(result.contains("yourdomain.com"), "Expected the result to contain 'yourdomain.com', as the certificate contains that value in DNS entry.");
+        assertTrue(result.contains("anotherdomain.com"), "Expected the result to contain 'anotherdomain.com', as the certificate contains that value in DNS entry.");
+        assertFalse(result.contains("192.168.1.1"), "Didn't expect the result to contain '192.168.1.1, which is provided in an IP entry in the certificate. IP entries are not defined as a valid source for JIDs in a certificate by RFC6120.");
     }
 
     /**
@@ -484,14 +838,7 @@ public class CertificateManagerTest
 
     public static void assertCertificateDateNotValid( String message, X509Certificate certificate, Date date )
     {
-        try
-        {
-            certificate.checkValidity( date );
-            fail( message );
-        }
-        catch ( CertificateExpiredException | CertificateNotYetValidException e )
-        {
-            // This is expected to be thrown.
-        }
+        CertificateException e = assertThrows(CertificateException.class, () -> certificate.checkValidity( date ), message);
+        assertTrue( e instanceof CertificateExpiredException || e instanceof CertificateNotYetValidException, message );
     }
 }

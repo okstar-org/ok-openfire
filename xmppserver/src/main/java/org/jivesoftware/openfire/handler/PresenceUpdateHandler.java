@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ import java.util.stream.Collectors;
  *
  * @author Iain Shigeoka
  */
-public class PresenceUpdateHandler extends BasicModule implements ChannelHandler, ClusterEventListener {
+public class PresenceUpdateHandler extends BasicModule implements ChannelHandler<Presence>, ClusterEventListener {
 
     private static final Logger Log = LoggerFactory.getLogger(PresenceUpdateHandler.class);
 
@@ -137,11 +137,6 @@ public class PresenceUpdateHandler extends BasicModule implements ChannelHandler
     public PresenceUpdateHandler() {
         super("Presence update handler");
         localDirectedPresences = new ConcurrentHashMap<>();
-    }
-
-    @Override
-    public void process(Packet packet) throws UnauthorizedException, PacketException {
-        process((Presence) packet, sessionManager.getSession(packet.getFrom()));
     }
 
     private void process(Presence presence, ClientSession session) throws UnauthorizedException, PacketException {
@@ -207,9 +202,10 @@ public class PresenceUpdateHandler extends BasicModule implements ChannelHandler
      * @param presence The presence presence to handle
      * @throws PacketException if the packet is null or the packet could not be routed.
      */
+    @Override
     public void process(Presence presence) throws PacketException {
         try {
-            process((Packet)presence);
+            process(presence, sessionManager.getSession(presence.getFrom()));
         }
         catch (UnauthorizedException e) {
             try {
@@ -315,7 +311,7 @@ public class PresenceUpdateHandler extends BasicModule implements ChannelHandler
             // Local updates can simply run through the roster of the local user
             String name = update.getFrom().getNode();
             try {
-                if (name != null && !"".equals(name)) {
+                if (name != null && !name.isEmpty()) {
                     Roster roster = rosterManager.getRoster(name);
                     roster.broadcastPresence(update);
                 }
@@ -344,7 +340,7 @@ public class PresenceUpdateHandler extends BasicModule implements ChannelHandler
      *
      * @param update  the directed Presence sent by the user to an entity.
      * @param handlerJID the JID of the handler that will receive/handle/process the sent packet.
-     * @param jid     the receipient specified in the packet to handle.
+     * @param jid     the recipient specified in the packet to handle.
      */
     public void directedPresenceSent(Presence update, JID handlerJID, String jid) {
         if (update.getFrom() == null) {
@@ -353,7 +349,7 @@ public class PresenceUpdateHandler extends BasicModule implements ChannelHandler
         if (localServer.isLocal(update.getFrom())) {
             boolean keepTrack = false;
             String name = update.getFrom().getNode();
-            if (name != null && !"".equals(name)) {
+            if (name != null && !name.isEmpty()) {
                 // Keep track of all directed presences if roster service is disabled
                 if (!RosterManager.isRosterServiceEnabled()) {
                     keepTrack = true;
@@ -398,28 +394,13 @@ public class PresenceUpdateHandler extends BasicModule implements ChannelHandler
                     if (Presence.Type.unavailable.equals(update.getType())) {
                         if (directedPresences != null) {
                             // It's a directed unavailable presence
-                            if (routingTable.hasClientRoute(handlerJID)) {
-                                // Client sessions will receive only presences to the same JID (the
-                                // address of the session) so remove the handler from the map
-                                for (DirectedPresence directedPresence : directedPresences) {
-                                    if (directedPresence.getHandler().equals(handlerJID)) {
+                            for (DirectedPresence directedPresence : directedPresences) {
+                                if (directedPresence.getHandler().equals(handlerJID)) {
+                                    directedPresence.removeReceiver(jid);
+                                    if (directedPresence.isEmpty()) {
                                         directedPresences.remove(directedPresence);
-                                        break;
                                     }
-                                }
-                            }
-                            else {
-                                // A service may receive presences for many JIDs so in this case we
-                                // just need to remove the jid that has received a directed
-                                // unavailable presence
-                                for (DirectedPresence directedPresence : directedPresences) {
-                                    if (directedPresence.getHandler().equals(handlerJID)) {
-                                        directedPresence.removeReceiver(jid);
-                                        if (directedPresence.isEmpty()) {
-                                            directedPresences.remove(directedPresence);
-                                        }
-                                        break;
-                                    }
+                                    break;
                                 }
                             }
                             if (directedPresences.isEmpty()) {

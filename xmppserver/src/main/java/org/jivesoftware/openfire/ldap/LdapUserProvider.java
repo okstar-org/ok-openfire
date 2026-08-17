@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2020 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ import java.util.stream.Collectors;
  */
 public class LdapUserProvider implements UserProvider {
 
-    private static final Logger Log = LoggerFactory.getLogger(LdapUserProvider.class);
+    private final Logger Log;
 
     // LDAP date format parser.
     private static final SimpleDateFormat ldapDateFormat = new SimpleDateFormat("yyyyMMddHHmmss");
@@ -59,13 +59,19 @@ public class LdapUserProvider implements UserProvider {
     private Collection<User> allUsers = null;
 
     public LdapUserProvider() {
+        this(null);
+    }
+
+    public LdapUserProvider(String ldapConfigPropertyName) {
+        Log = LoggerFactory.getLogger(LdapUserProvider.class.getName() + (ldapConfigPropertyName == null ? "" : ( "[" + ldapConfigPropertyName + "]" )));
+
         // Convert XML based provider setup to Database based
         JiveGlobals.migrateProperty("ldap.searchFields");
 
-        manager = LdapManager.getInstance();
+        manager = LdapManager.getInstance(ldapConfigPropertyName);
         searchFields = new LinkedHashMap<>();
         String fieldList = JiveGlobals.getProperty("ldap.searchFields");
-        // If the value isn't present, default to to username, name, and email.
+        // If the value isn't present, default to the username, name, and email.
         if (fieldList == null) {
             searchFields.put("Username", manager.getUsernameField());
             int i = 0;
@@ -119,12 +125,12 @@ public class LdapUserProvider implements UserProvider {
             }
             Date creationDate = null;
             Attribute creationDateField = attrs.get("createTimestamp");
-            if (creationDateField != null && "".equals(((String) creationDateField.get()).trim())) {
+            if (creationDateField != null && ((String) creationDateField.get()).trim().isEmpty()) {
                 creationDate = parseLDAPDate((String) creationDateField.get());
             }
             Date modificationDate = null;
             Attribute modificationDateField = attrs.get("modifyTimestamp");
-            if (modificationDateField != null && "".equals(((String) modificationDateField.get()).trim())) {
+            if (modificationDateField != null && ((String) modificationDateField.get()).trim().isEmpty()) {
                 modificationDate = parseLDAPDate((String)modificationDateField.get());
             }
             // Escape the username so that it can be used as a JID.
@@ -139,10 +145,10 @@ public class LdapUserProvider implements UserProvider {
             if (authPassword != null) {
                 // The authPassword attribute can be multivalued.
                 // Not sure if this is the right API to loop through them.
-                NamingEnumeration values = authPassword.getAll();
+                NamingEnumeration<?> values = authPassword.getAll();
                 while (values.hasMore()) {
                     Attribute authPasswordValue = (Attribute) values.next();
-                    String[] parts = ((String) authPasswordValue.get()).split("$");
+                    String[] parts = ((String) authPasswordValue.get()).split("\\$");
                     String[] authInfo = parts[1].split(":");
                     String[] authValue = parts[2].split(":");
     
@@ -150,7 +156,7 @@ public class LdapUserProvider implements UserProvider {
     
                     // We only support SCRAM-SHA-1 at the moment.
                     if ("SCRAM-SHA-1".equals(scheme)) {
-                        int iterations = Integer.valueOf(authInfo[0].trim());
+                        int iterations = Integer.parseInt(authInfo[0].trim());
                         String salt = authInfo[1].trim();
                         String storedKey = authValue[0].trim();
                         String serverKey = authValue[1].trim();
@@ -314,7 +320,7 @@ public class LdapUserProvider implements UserProvider {
     public Collection<User> findUsers(Set<String> fields, String query, int startIndex,
             int numResults) throws UnsupportedOperationException
     {
-        if (fields.isEmpty() || query == null || "".equals(query)) {
+        if (fields.isEmpty() || query == null || query.isEmpty()) {
             return Collections.emptyList();
         }
         
@@ -412,7 +418,7 @@ public class LdapUserProvider implements UserProvider {
             date = ldapDateFormat.parse(dateText);
         }
         catch (Exception e) {
-            Log.error(e.getMessage(), e);
+            LoggerFactory.getLogger(LdapUserProvider.class).error(e.getMessage(), e);
         }
         return date;
     }

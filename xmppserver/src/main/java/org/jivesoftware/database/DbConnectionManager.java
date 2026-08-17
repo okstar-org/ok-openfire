@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,14 +25,13 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Statement;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.MissingResourceException;
+import java.util.*;
 
 import org.jivesoftware.util.ClassUtils;
 import org.jivesoftware.util.JiveGlobals;
+import org.jivesoftware.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,6 +74,8 @@ public class DbConnectionManager {
     private static boolean pstmt_fetchSizeSupported = true;
     /** The char used to quote identifiers */
     private static String identifierQuoteString;
+    /** True if the database supports SQL row-value (tuple) comparison, e.g. {@code (a, b, c) > (?, ?, ?)}, in a WHERE clause. */
+    private static boolean rowValueComparisonSupported;
 
     private static final String SETTING_DATABASE_MAX_RETRIES = "database.maxRetries";
     private static final String SETTING_DATABASE_RETRY_DELAY = "database.retryDelay";
@@ -207,8 +208,11 @@ public class DbConnectionManager {
     }
 
     /**
-     * Returns a Connection from the currently active connection provider that
-     * is ready to participate in transactions (auto commit is set to false).
+     * Returns a Connection from the currently active connection provider that is ready to participate in transactions
+     * (auto commit is set to false).
+     *
+     * Use this when you need setFetchSize to actually stream large result sets (auto-commit connections silently buffer
+     * on PostgreSQL/MySQL)
      *
      * @return a connection with transactions enabled.
      * @throws SQLException if a SQL exception occurs.
@@ -658,6 +662,17 @@ public class DbConnectionManager {
 
                 // Check to see if the database schema needs to be upgraded.
                 schemaManager.checkOpenfireSchema(con);
+
+                // Probe string-based large text I/O only after the Openfire schema has been verified.
+                if (databaseType == DatabaseType.oracle) {
+                    final DatabaseMetaData metaData = con.getMetaData();
+                    final String driverName = metaData.getDriverName().toLowerCase(Locale.ROOT);
+                    final int driverMajor = metaData.getDriverMajorVersion();
+
+                    if (driverMajor >= 12 && !driverName.contains("auguro")) {
+                        streamTextRequired = probeStreamingRequired(con);
+                    }
+                }
             }
             catch (MissingResourceException mre) {
                 Log.error(mre.getMessage());
@@ -826,81 +841,286 @@ public class DbConnectionManager {
      */
     private static void setMetaData(Connection con) throws SQLException {
         DatabaseMetaData metaData = con.getMetaData();
-        // Supports transactions?
-        transactionsSupported = metaData.supportsTransactions();
-        // Supports subqueries?
-        subqueriesSupported = metaData.supportsCorrelatedSubqueries();
-        // Supports scroll insensitive result sets? Try/catch block is a
-        // workaround for DB2 JDBC driver, which throws an exception on
-        // the method call.
+
+        // Log what we're connecting to so operators can diagnose capability issues.
+        Log.info("Detected database: {} {} | Driver: {} {}.{}",
+            metaData.getDatabaseProductName(),
+            metaData.getDatabaseProductVersion(),
+            metaData.getDriverName(),
+            metaData.getDriverMajorVersion(),
+            metaData.getDriverMinorVersion());
+
+        // Standard metadata queries (reliable across all modern drivers)
+        transactionsSupported   = metaData.supportsTransactions();
+        subqueriesSupported     = metaData.supportsCorrelatedSubqueries();
+        batchUpdatesSupported   = metaData.supportsBatchUpdates();
+        identifierQuoteString   = metaData.getIdentifierQuoteString();
+
         try {
-            scrollResultsSupported = metaData.supportsResultSetType(
-                    ResultSet.TYPE_SCROLL_INSENSITIVE);
-        }
-        catch (Exception e) {
+            scrollResultsSupported = metaData.supportsResultSetType(ResultSet.TYPE_SCROLL_INSENSITIVE);
+        } catch (Exception e) {
+            // Workaround for DB2 JDBC, which throws on this call.
             scrollResultsSupported = false;
         }
-        // Supports batch updates
-        batchUpdatesSupported = metaData.supportsBatchUpdates();
 
-        // Set defaults for other meta properties
+        // Conservative defaults for flags not covered by standard metadata. These may be tightened per-database below.
         streamTextRequired = false;
-        maxRowsSupported = true;
+        maxRowsSupported   = true;
         fetchSizeSupported = true;
-        identifierQuoteString = metaData.getIdentifierQuoteString();
+        rowValueComparisonSupported = false; // this cannot be dynamically detected. Opt-in per-database below for those known to support it.
 
-        // Get the database name so that we can perform meta data settings.
-        String dbName = metaData.getDatabaseProductName().toLowerCase();
-        String driverName = metaData.getDriverName().toLowerCase();
+        String dbName      = metaData.getDatabaseProductName().toLowerCase(Locale.ROOT);
+        String dbVersion   = metaData.getDatabaseProductVersion().toLowerCase(Locale.ROOT);
+        String driverName  = metaData.getDriverName().toLowerCase(Locale.ROOT);
+        int    driverMajor = metaData.getDriverMajorVersion();
+        String dbUrl = metaData.getURL();
+        if (dbUrl == null) {
+            dbUrl = "";
+        }
+        dbUrl = dbUrl.toLowerCase(Locale.ROOT);
 
-        // Oracle properties.
+        // Oracle
         if (dbName.contains("oracle")) {
             databaseType = DatabaseType.oracle;
-            streamTextRequired = true;
-            // scrollResultsSupported = false; /* comment and test this, it should be supported since 10g */
-            // The i-net AUGURO JDBC driver
+
+            // Oracle JDBC 12.1+ (ojdbc8/ojdbc11) can read moderate-sized CLOBs via getString() without streaming.
+            // Below 12, streaming is required to avoid ORA-17023 / ORA-17011 on CLOB columns. Very large CLOBs
+            // (> ~32 KB) may still need streaming on all versions. For newer drivers, a best-effort probe against
+            // a CLOB-backed Openfire table is executed later, after schema verification.
+            if (driverMajor < 12) {
+                streamTextRequired = true;
+            }
+
+            // i-net AUGURO is an old third-party Oracle driver. Still harmless to keep.
             if (driverName.contains("auguro")) {
                 streamTextRequired = false;
                 fetchSizeSupported = true;
-                maxRowsSupported = false;
+                maxRowsSupported   = false;
             }
         }
+
+        // CockroachDB must be checked first: it is wire-protocol compatible with PostgreSQL and
+        // may report "postgresql" as the product name when accessed via the PostgreSQL JDBC driver.
+        else if (dbName.contains("cockroach") || dbVersion.contains("cockroach") ||
+                isCockroachCompatiblePostgreSQLConnection(con, dbName, driverName, dbUrl)) {
+            databaseType = DatabaseType.cockroachdb;
+            scrollResultsSupported = false;
+            fetchSizeSupported = false;
+            rowValueComparisonSupported = true;
+        }
+
         // Postgres properties
         else if (dbName.contains("postgres")) {
             databaseType = DatabaseType.postgresql;
-            // Postgres blows, so disable scrolling result sets.
-            scrollResultsSupported = false;
-            fetchSizeSupported = false;
+            rowValueComparisonSupported = true;
+
+            // PostgreSQL JDBC 42.x reports TYPE_SCROLL_INSENSITIVE as supported, which is accurate - but server-side
+            // cursors (required for scrolling) only work when auto-commit is off. Since many connections in this
+            // codebase use auto-commit, we leave scrollResultsSupported as-is from metadata (true) and let the runtime
+            // try/catch in scrollResultSet() handle any failure gracefully.
+
+            // setFetchSize() is silently ignored by the PostgreSQL JDBC driver when auto-commit is on, so it will never
+            // throw to trigger the try/catch auto-detect. On transactional (auto-commit = false) connections it
+            // works correctly. Leaving fetchSizeSupported=true means we call it everywhere; it is a no-op for
+            // auto-commit connections and effective for transactional ones. Preferable to blanket false.
         }
-        // Interbase properties
+
+        // Interbase (Embarcadero)
+        // Note: Firebird (the open-source fork) reports product name "Firebird", not "Interbase", so Jaybird 5.x
+        // installations are NOT matched here. They inherit the defaults above, which are correct for Jaybird.
         else if (dbName.contains("interbase")) {
             databaseType = DatabaseType.interbase;
             fetchSizeSupported = false;
-            maxRowsSupported = false;
+            maxRowsSupported   = false;
         }
-        // SQLServer
+
+        // Microsoft SQL Server
+        // The Microsoft JDBC driver (mssql-jdbc) supports both fetchSize and maxRows correctly and will be detected and
+        // handled by the global try/catch on first use.
         else if (dbName.contains("sql server")) {
             databaseType = DatabaseType.sqlserver;
-            // JDBC driver i-net UNA properties
-            if (driverName.contains("una")) {
-                fetchSizeSupported = true;
-                maxRowsSupported = false;
-            }
         }
-        // MySQL properties
-        else if (dbName.contains("mysql") || dbName.contains("maria")) {
+
+        // MariaDB properties (must be checked before MySQL, as MariaDB reports its product name as "MariaDB")
+        else if (dbName.contains("maria")) {
+            databaseType = DatabaseType.mariadb;
+            rowValueComparisonSupported = true;
+        }
+
+        // MySQLproperties
+        else if (dbName.contains("mysql")) {
             databaseType = DatabaseType.mysql;
-            // transactionsSupported = false; /* comment and test this, it should be supported since 5.0 */
+            rowValueComparisonSupported = true;
         }
-        // HSQL properties
+
+        // HSQLDB
         else if (dbName.contains("hsql")) {
             databaseType = DatabaseType.hsqldb;
-            // scrollResultsSupported = false; /* comment and test this, it should be supported since 1.7.2 */
+            rowValueComparisonSupported = true;
         }
-        // DB2 properties.
+
+        // DB2
         else if (dbName.contains("db2")) {
             databaseType = DatabaseType.db2;
         }
+
+        // Firebird properties.
+        else if (dbName.contains("firebird")) {
+            databaseType = DatabaseType.firebird;
+        }
+
+        Log.debug("Database capabilities: transactions={}, scrollResults={}, batchUpdates={}, subqueries={}, streamText={}, maxRows={}, fetchSize={}, rowValueComparison={}, identifierQuoteString={}",
+            transactionsSupported, scrollResultsSupported, batchUpdatesSupported, subqueriesSupported, streamTextRequired, maxRowsSupported, fetchSizeSupported, rowValueComparisonSupported, identifierQuoteString);
+    }
+
+    /**
+     * Probes whether the database/driver requires text to be written and read via character streams rather than
+     * plain getString()/setString().
+     *
+     * This is needed when the JDBC driver cannot natively coerce between its CLOB/NCLOB/TEXT type and a Java String for
+     * large values. The probe writes a large string (8192 characters) to the CLOB-backed {@code ofPubsubItem.payload}
+     * column and reads it back; if the driver throws, returns null, or returns a different value, streaming is needed.
+     *
+     * This is a best-effort probe: if the probe itself fails for an unexpected reason, we conservatively return
+     * {@code true} (streaming required).
+     *
+     * @param con an open connection to probe with.
+     * @return true if streaming is required, false if getString()/setString() work.
+     */
+    private static boolean probeStreamingRequired(Connection con)
+    {
+        // Use per-run identifiers to avoid mutating or deleting any user-provided data.
+        final String probeKey = "streaming-probe-" + UUID.randomUUID();
+        final String probeJid = "streaming-probe@example.org";
+        final String probeCreationDate = StringUtils.dateToMillis(new Date());
+        final String probeValue = StringUtils.randomString(8192);
+        final boolean autoCommit;
+        Savepoint probeSavepoint = null;
+
+        try {
+            autoCommit = con.getAutoCommit();
+        } catch (SQLException ex) {
+            Log.debug("Unable to determine auto-commit state for database streaming probe; defaulting to stream-based large text I/O.", ex);
+            return true;
+        }
+
+        // When auto-commit is disabled, isolate all probe writes in a savepoint and roll them back afterwards.
+        // Use an unnamed savepoint for widest JDBC compatibility.
+        if (!autoCommit) {
+            try {
+                probeSavepoint = con.setSavepoint();
+            } catch (SQLException ex) {
+                Log.debug("Unable to create savepoint for database streaming probe on non-autocommit connection; defaulting to stream-based large text I/O.", ex);
+                return true;
+            }
+        }
+
+        // Insert only. Updating shouldn't be needed, as a per-run unique key is used.
+        boolean probeRowInserted = false;
+        try (PreparedStatement insert = con.prepareStatement("INSERT INTO ofPubsubItem (serviceID, nodeID, id, jid, creationDate, payload) VALUES (?, ?, ?, ?, ?, ?)")) {
+            insert.setString(1, probeKey);
+            insert.setString(2, probeKey);
+            insert.setString(3, probeKey);
+            insert.setString(4, probeJid);
+            insert.setString(5, probeCreationDate);
+            insert.setString(6, probeValue);
+            probeRowInserted = insert.executeUpdate() > 0;
+        } catch (SQLException ex) {
+            Log.debug("Unable to insert a test row used for the database streaming probe.", ex);
+        }
+
+        if (!probeRowInserted) {
+            if (probeSavepoint != null) {
+                try {
+                    con.rollback(probeSavepoint);
+                } catch (SQLException ex) {
+                    Log.debug("Unable to roll back savepoint for failed database streaming probe.", ex);
+                }
+                try {
+                    con.releaseSavepoint(probeSavepoint);
+                } catch (SQLException ex) {
+                    Log.debug("Unable to release savepoint for failed database streaming probe.", ex);
+                }
+            }
+            Log.debug("Database streaming probe row could not be prepared; defaulting to stream-based large text I/O.");
+            return true;
+        }
+
+        try (PreparedStatement read = con.prepareStatement("SELECT payload FROM ofPubsubItem WHERE serviceID = ? AND nodeID = ? AND id = ?")) {
+            read.setString(1, probeKey);
+            read.setString(2, probeKey);
+            read.setString(3, probeKey);
+
+            try (ResultSet rs = read.executeQuery()) {
+                if (!rs.next()) {
+                    Log.debug("Database streaming probe row was not found after insertion; defaulting to stream-based large text I/O.");
+                    return true;
+                }
+
+                final String result = rs.getString(1);
+                // Streaming is required if: exception occurs (caught below), result is null, or result differs from original.
+                boolean streamingRequired = result == null || !probeValue.equals(result);
+                if (streamingRequired) {
+                    Log.debug("Database streaming probe detected that getString()/setString() cannot reliably handle large text values; enabling stream-based I/O.");
+                }
+                return streamingRequired;
+            }
+        } catch (SQLException e) {
+            Log.debug("Streaming probe via setString()/getString() failed; enabling stream-based large text I/O.", e);
+            return true;
+        } catch (Exception e) {
+            Log.info("Unexpected error during database streaming probe; defaulting to streaming.", e);
+            return true;
+        } finally {
+            if (probeSavepoint != null) {
+                // On non-autocommit connections, rollback to savepoint to release locks and remove probe side effects.
+                try {
+                    con.rollback(probeSavepoint);
+                } catch (SQLException ex) {
+                    Log.debug("Unable to rollback savepoint used by the database streaming probe.", ex);
+                }
+                try {
+                    con.releaseSavepoint(probeSavepoint);
+                } catch (SQLException ex) {
+                    Log.debug("Unable to release savepoint used by the database streaming probe.", ex);
+                }
+            } else {
+                // Cleanup our test row for auto-commit connections.
+                try (PreparedStatement delete = con.prepareStatement("DELETE FROM ofPubsubItem WHERE serviceID = ? AND nodeID = ? AND id = ?")) {
+                    delete.setString(1, probeKey);
+                    delete.setString(2, probeKey);
+                    delete.setString(3, probeKey);
+                    delete.execute();
+                } catch (SQLException ex) {
+                    Log.debug("Unable to clean up a test row used by the database streaming probe.", ex);
+                }
+            }
+        }
+    }
+
+    /**
+     * CockroachDB uses PostgreSQL wire protocol and often the PostgreSQL JDBC driver.
+     * If metadata is ambiguous, run a lightweight probe to prevent selecting PostgreSQL scripts.
+     */
+    private static boolean isCockroachCompatiblePostgreSQLConnection(Connection con, String dbName, String driverName, String dbUrl) {
+        final boolean likelyPostgreSqlCompatible =
+                dbName.contains("postgres") || driverName.contains("postgres") || dbUrl.startsWith("jdbc:postgresql:");
+        if (!likelyPostgreSqlCompatible) {
+            return false;
+        }
+
+        try (Statement stmt = con.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT version()")) {
+            if (rs.next()) {
+                final String version = rs.getString(1);
+                return version != null && version.toLowerCase().contains("cockroach");
+            }
+        }
+        catch (SQLException e) {
+            Log.debug("Unable to execute CockroachDB detection probe. Falling back to PostgreSQL detection.", e);
+        }
+
+        return false;
     }
 
     /**
@@ -977,11 +1197,42 @@ public class DbConnectionManager {
     }
 
     public static boolean isEmbeddedDB() {
-        return connectionProvider != null && connectionProvider instanceof EmbeddedConnectionProvider;
+        return connectionProvider instanceof EmbeddedConnectionProvider;
     }
 
     public static String getIdentifierQuoteString() {
         return identifierQuoteString;
+    }
+
+    /**
+     * Returns the keyword or keyword phrase used by the active database to limit result sets.
+     *
+     * Depending on the database, this can be {@link ResultSetLimitKeyword#TOP},
+     * {@link ResultSetLimitKeyword#LIMIT}, or {@link ResultSetLimitKeyword#FETCH_FIRST}.
+     *
+     * @return the result-set limit keyword used by the current database.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3277">OF-3277</a>
+     */
+    public static ResultSetLimitKeyword getResultSetLimitKeyword()
+    {
+        return databaseType.getResultSetLimitKeyword();
+    }
+
+    /**
+     * Indicates if the result-set limit keyword is used as a prefix before the selected columns.
+     *
+     * This is true for databases such as SQL Server that use {@code SELECT TOP (...) ...}.
+     *
+     * @return {@code true} if the keyword is prefix-style, otherwise {@code false}.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3277">OF-3277</a>
+     */
+    public static boolean isResultSetLimitKeywordPrefix()
+    {
+        return databaseType.isResultSetLimitKeywordPrefix();
+    }
+
+    public static boolean isRowValueComparisonSupported() {
+        return rowValueComparisonSupported;
     }
 
     public static String getTestSQL(String driver) {
@@ -993,6 +1244,9 @@ public class DbConnectionManager {
         }
         else if (driver.contains("oracle")) {
             return "select 1 from dual";
+        }
+        else if (driver.contains("firebird")) {
+            return "select 1 from rdb$database";
         }
         else {
             return "select 1";
@@ -1012,11 +1266,17 @@ public class DbConnectionManager {
 
         postgresql,
 
+        cockroachdb,
+
         mysql("rank"),
+
+        mariadb("rank"),
 
         hsqldb,
 
         db2,
+
+        firebird,
 
         sqlserver,
 
@@ -1036,6 +1296,59 @@ public class DbConnectionManager {
             } else {
                 return keyword;
             }
+        }
+
+        /**
+         * Returns the keyword or keyword phrase that should be used to limit result sets for this database type.
+         *
+         * @return the result-set limit keyword, or a sensible default when the database type is unknown.
+         * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3277">OF-3277</a>
+         */
+        public ResultSetLimitKeyword getResultSetLimitKeyword()
+        {
+            return switch (this) {
+                case sqlserver -> ResultSetLimitKeyword.TOP;
+                case oracle, db2, firebird -> ResultSetLimitKeyword.FETCH_FIRST;
+                default -> ResultSetLimitKeyword.LIMIT;
+            };
+        }
+
+        /**
+         * Indicates if the result-set limit keyword is used before the column list in a SELECT statement.
+         *
+         * @return {@code true} when the keyword is prefix-style (for example {@code TOP}), otherwise {@code false}.
+         * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3277">OF-3277</a>
+         */
+        public boolean isResultSetLimitKeywordPrefix()
+        {
+            return getResultSetLimitKeyword().isPrefix();
+        }
+    }
+
+    /**
+     * Identifies how a database limits result sets.
+     *
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3277">OF-3277</a>
+     */
+    public enum ResultSetLimitKeyword
+    {
+        TOP(true),
+        FETCH_FIRST(false),
+        LIMIT(false);
+
+        private final boolean prefix;
+
+        ResultSetLimitKeyword(final boolean prefix) {
+            this.prefix = prefix;
+        }
+
+        /**
+         * Indicates if the keyword is used before the selected columns in a {@code SELECT} statement.
+         *
+         * @return {@code true} for prefix-style keywords such as {@code TOP}, otherwise {@code false}.
+         */
+        public boolean isPrefix() {
+            return prefix;
         }
     }
 }

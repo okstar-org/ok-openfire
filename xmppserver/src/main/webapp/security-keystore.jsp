@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2018-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2018-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
   - limitations under the License.
 --%>
 <%@ page contentType="text/html; charset=UTF-8" %>
-<%@page import="org.jivesoftware.util.StringUtils"%>
 <%@page import="org.jivesoftware.util.CertificateManager"%>
 <%@ page import="org.jivesoftware.util.CookieUtils" %>
 <%@ page import="org.jivesoftware.util.StringUtils" %>
@@ -105,7 +104,8 @@
                     // When updating certificates through the admin console, do not cause changes to restart the website, as
                     // that is very likely to log out the administrator that is performing the changes. As the keystore change
                     // event is async, this line disables restarting the plugin for a few minutes.
-                    ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).pauseAutoRestartEnabled(Duration.ofMinutes(5));
+                    XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin")
+                        .ifPresent(plugin -> ((AdminConsolePlugin) plugin).pauseAutoRestartEnabled(Duration.ofMinutes(5)));
 
                     identityStore.delete( alias );
 
@@ -130,7 +130,8 @@
             // When updating certificates through the admin console, do not cause changes to restart the website, as
             // that is very likely to log out the administrator that is performing the changes. As the keystore change
             // event is async, this line disables restarting the plugin for a few minutes.
-            ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).pauseAutoRestartEnabled(Duration.ofMinutes(5));
+            XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin")
+                .ifPresent(plugin -> ((AdminConsolePlugin) plugin).pauseAutoRestartEnabled(Duration.ofMinutes(5)));
 
             if (!identityStore.containsAllIdentityCertificate()) {
                 identityStore.addSelfSignedDomainCertificate();
@@ -152,12 +153,13 @@
 
     if (importReply) {
         String reply = ParamUtils.getParameter(request, "reply");
-        if (alias != null && reply != null && reply.trim().length() > 0) {
+        if (alias != null && reply != null && !reply.trim().isEmpty()) {
             try {
                 // When updating certificates through the admin console, do not cause changes to restart the website, as
                 // that is very likely to log out the administrator that is performing the changes. As the keystore change
                 // event is async, this line disables restarting the plugin for a few minutes.
-                ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).pauseAutoRestartEnabled(Duration.ofMinutes(5));
+                XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin")
+                    .ifPresent(plugin -> ((AdminConsolePlugin) plugin).pauseAutoRestartEnabled(Duration.ofMinutes(5)));
 
                 identityStore.installCSRReply(alias, reply);
                 identityStore.persist();
@@ -172,7 +174,8 @@
         }
     }
 
-    final boolean restartNeeded = ( (AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin( "admin" ) ).isRestartNeeded();
+    final AdminConsolePlugin plugin = (AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").orElse(null);
+    final boolean restartNeeded = plugin != null && plugin.isRestartNeeded();
     pageContext.setAttribute( "restartNeeded", restartNeeded );
 
     boolean offerUpdateIssuer = false;

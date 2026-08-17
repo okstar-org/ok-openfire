@@ -14,41 +14,20 @@
 
   <properties>
     <application.entrypoint>com.igniterealtime.openfire.updaterunner.Main</application.entrypoint>
-    <maven.compiler.source>11</maven.compiler.source>
-    <maven.compiler.target>11</maven.compiler.target>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <ojdbc.version>23.7.0.25.01</ojdbc.version>
   </properties>
 
   <build>
     <plugins>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-assembly-plugin</artifactId>
-        <executions>
-          <execution>
-            <phase>package</phase>
-            <goals>
-              <goal>single</goal>
-            </goals>
-            <configuration>
-              <archive>
-                <manifest>
-                  <mainClass>
-                    com.igniterealtime.openfire.updaterunner.Main
-                  </mainClass>
-                </manifest>
-              </archive>
-              <descriptorRefs>
-                <descriptorRef>jar-with-dependencies</descriptorRef>
-              </descriptorRefs>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-          <groupId>org.apache.felix</groupId>
-          <artifactId>maven-bundle-plugin</artifactId>
-          <version>4.2.0</version>
-          <extensions>true</extensions>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>1.4.0</version>
+        <configuration>
+          <mainClass>com.igniterealtime.openfire.updaterunner.Main</mainClass>
+        </configuration>
       </plugin>
     </plugins>
   </build>
@@ -60,14 +39,19 @@
       <version>${env.OPENFIREVSN}</version>
     </dependency>
     <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.18.0</version>
+    </dependency>
+    <dependency>
       <groupId>org.hsqldb</groupId>
       <artifactId>hsqldb</artifactId>
-      <version>2.7.1</version>
+      <version>2.7.4</version>
     </dependency>
     <dependency>
       <groupId>com.mysql</groupId>
       <artifactId>mysql-connector-j</artifactId>
-      <version>8.2.0</version>
+      <version>26.7.0</version>
       <exclusions>
         <exclusion>
           <groupId>com.google.protobuf</groupId>
@@ -76,9 +60,19 @@
       </exclusions>
     </dependency>
     <dependency>
+      <groupId>org.mariadb.jdbc</groupId>
+      <artifactId>mariadb-java-client</artifactId>
+      <version>3.5.8</version>
+    </dependency>
+    <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
-      <version>42.7.2</version>
+      <version>42.7.12</version>
+    </dependency>
+    <dependency>
+      <groupId>org.firebirdsql.jdbc</groupId>
+      <artifactId>jaybird</artifactId>
+      <version>6.0.5</version>
     </dependency>
     <dependency>
       <groupId>net.sourceforge.jtds</groupId>
@@ -88,19 +82,55 @@
     <dependency>
       <groupId>com.microsoft.sqlserver</groupId>
       <artifactId>mssql-jdbc</artifactId>
-      <version>9.4.1.jre11</version>
+      <version>13.4.0.jre11</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ucp</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>rsi</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.security</groupId>
+      <artifactId>oraclepki</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.ha</groupId>
+      <artifactId>simplefan</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.ha</groupId>
+      <artifactId>ons</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.nls</groupId>
+      <artifactId>orai18n</artifactId>
+      <version>${ojdbc.version}</version>
+    </dependency>
+    <dependency> <!-- OF-2960: Including dependencies of ojdbc11-production rather than ojdbc11-production itself. -->
+      <groupId>com.oracle.database.xml</groupId>
+      <artifactId>xdb</artifactId>
+      <version>${ojdbc.version}</version>
+      <exclusions>
+        <exclusion>
+          <!-- This dependency causes the JSPC compilation to fail.-->
+          <groupId>com.oracle.database.xml</groupId>
+          <artifactId>xmlparserv2</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
   </dependencies>
-
-<repositories>
-        <repository>
-            <id>atlassian-public</id>
-            <url>https://maven.atlassian.com/repository/public</url>
-        </repository>
-        <repository>
-            <id>ej-technologies</id>
-            <url>https://maven.ej-technologies.com/repository</url>
-        </repository>
-    </repositories>
 
 </project>

@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
                  java.util.Map,
                  java.net.URLEncoder"
 %><%@ page import="org.xmpp.packet.JID"%>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -55,7 +56,7 @@
         if (user != null) {
             // found the user, so redirect to the user properties page:
             response.sendRedirect("user-properties.jsp?username=" +
-                    URLEncoder.encode(user.getUsername(), "UTF-8"));
+                    URLEncoder.encode(user.getUsername(), StandardCharsets.UTF_8));
             return;
         }
     }
@@ -69,7 +70,7 @@
     </head>
     <body>
 
-<%    if (errors.size() > 0) { %>
+<%    if (!errors.isEmpty()) { %>
 <p class="jive-error-text"><fmt:message key="user.search.not_found" /></p>
 <%    } %>
 <form name="f" action="user-search.jsp" autocomplete="off">
@@ -80,7 +81,7 @@
       <tr class="c1">
         <td style="width: 1%; white-space: nowrap"><label for="username"><fmt:message key="user.create.username" />:</label></td>
         <td class="c2">
-          <input type="text" id="username" name="username" value="<%= ((username!=null) ? StringUtils.escapeForXML(username) : "") %>" size="30" maxlength="75"/>
+          <input type="text" id="username" name="username" value="<%= StringUtils.escapeForXML(username) %>" size="30" maxlength="75" autofocus/>
         </td>
       </tr>
      <tr><td colspan="2" nowrap><input type="submit" name="search" value="<fmt:message key="user.search.search" />"/><input type="submit" name="cancel" value="<fmt:message key="global.cancel" />"/></td>
@@ -88,9 +89,6 @@
     </table>
   </fieldset>
 </form>
-<script>
-document.f.username.focus();
-</script>
 
     </body>
 </html>

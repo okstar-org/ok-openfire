@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 <%@ page import="java.util.Map" %>
 <%@ page import="java.util.HashMap" %>
 <%@ page import="org.jivesoftware.openfire.admin.AdminManager" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -57,7 +58,7 @@
 
     // Handle a cancel
     if (request.getParameter("cancel") != null) {
-        response.sendRedirect("user-properties.jsp?username=" + URLEncoder.encode(username, "UTF-8"));
+        response.sendRedirect("user-properties.jsp?username=" + URLEncoder.encode(username, StandardCharsets.UTF_8));
         return;
     }
 
@@ -74,12 +75,12 @@
         }
         // If provider requires name, validate
         if (UserManager.getUserProvider().isNameRequired()) {
-            if (name == null || name.equals("")) {
+            if (name == null || name.isEmpty()) {
                 errors.put("name","");
             }
         }
 
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             user.setEmail(email);
             user.setName(name);
 
@@ -99,7 +100,7 @@
             }
 
             // Changes good, so redirect
-            response.sendRedirect("user-properties.jsp?editsuccess=true&username=" + URLEncoder.encode(username, "UTF-8"));
+            response.sendRedirect("user-properties.jsp?editsuccess=true&username=" + URLEncoder.encode(username, StandardCharsets.UTF_8));
             return;
         }
     }
@@ -112,7 +113,7 @@
     <head>
         <title><fmt:message key="user.edit.form.title"/></title>
         <meta name="subPageID" content="user-properties"/>
-        <meta name="extraParams" content="<%= "username="+URLEncoder.encode(username, "UTF-8") %>"/>
+        <meta name="extraParams" content="<%= "username="+URLEncoder.encode(username, StandardCharsets.UTF_8) %>"/>
     </head>
     <body>
 
@@ -179,7 +180,7 @@
             </td>
             <td>
                 <input type="text" size="30" maxlength="150" id="email" name="email"
-                 value="<%= ((user.getEmail()!=null) ? StringUtils.escapeForXML(user.getEmail()) : "") %>">
+                 value="<%= StringUtils.escapeForXML(user.getEmail()) %>">
             </td>
         </tr>
         <% if (!AdminManager.getAdminProvider().isReadOnly()) { %>

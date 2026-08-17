@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -196,8 +196,8 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
             String username = presence.getFrom().getNode();
 
             // Optimization: only delete the unavailable presence information if this
-            // is the first session created on the server.
-            if (sessionManager.getSessionCount(username) > 1) {
+            // is the first 'available' session created on the server.
+            if (sessionManager.getSessions(username).size() > 1) {
                 return;
             }
 
@@ -317,7 +317,7 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
         }
         catch (UserNotFoundException e) {
             Presence presenceToSend = new Presence();
-            presenceToSend.setError(PacketError.Condition.forbidden);
+            presenceToSend.setType(Presence.Type.unsubscribed);
             presenceToSend.setTo(packet.getFrom());
             presenceToSend.setFrom(packet.getTo());
             deliverer.deliver(presenceToSend);
@@ -329,9 +329,13 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
         if (probee.equals(prober.getNode()) && XMPPServer.getInstance().isLocal(prober)) {
             return true;
         }
-        RosterItem item = rosterManager.getRoster(probee).getRosterItem(prober);
-        return item.getSubStatus() == RosterItem.SUB_FROM
+        try {
+            RosterItem item = rosterManager.getRoster(probee).getRosterItem(prober);
+            return item.getSubStatus() == RosterItem.SUB_FROM
                 || item.getSubStatus() == RosterItem.SUB_BOTH;
+        } catch (UserNotFoundException e) {
+            return false;
+        }
     }
 
     @Override
@@ -372,8 +376,8 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
                             PrivacyList list = PrivacyListManager.getInstance()
                                     .getDefaultPrivacyList(probee.getNode());
                             // Send presence to all prober's resources
-                            for (JID receipient : proberFullJIDs) {
-                                presencePacket.setTo(receipient);
+                            for (JID recipient : proberFullJIDs) {
+                                presencePacket.setTo(recipient);
                                 if (list == null || !list.shouldBlockPacket(presencePacket)) {
                                     // Send the presence to the prober
                                     deliverer.deliver(presencePacket);
@@ -396,8 +400,8 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
                         PrivacyList list = session.getActiveList();
                         list = list == null ? session.getDefaultList() : list;
                         // Send presence to all prober's resources
-                        for (JID receipient : proberFullJIDs) {
-                            presencePacket.setTo(receipient);
+                        for (JID recipient : proberFullJIDs) {
+                            presencePacket.setTo(recipient);
                             if (list != null) {
                                 if (list.shouldBlockPacket(presencePacket)) {
                                     // Default list blocked outgoing presence so skip this session
@@ -435,7 +439,7 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
                         probePresence.setFrom(prober);
                         probePresence.setTo(probee.toBareJID());
                         // Send the probe presence
-                        deliverer.deliver(probePresence);
+                        deliverer.deliverAsync(probePresence).whenComplete((v, t) -> { if (t != null) { Log.warn("Unable to probe presence from {} to {}", prober, probee, t); }});
                     }
                     else {
                         // The probee may be related to a component that has not yet been connected so
@@ -462,7 +466,7 @@ public class PresenceManagerImpl extends BasicModule implements PresenceManager,
                 Presence presencePacket = new Presence();
                 presencePacket.setType(Presence.Type.unavailable);
                 presencePacket.setFrom(session.getAddress());
-                // Ensure that unavailable presence is sent to all receipient's resources
+                // Ensure that unavailable presence is sent to all recipient's resources
                 Collection<JID> recipientFullJIDs = new ArrayList<>();
                 if (server.isLocal(recipientJID)) {
                     for (ClientSession targetSession : sessionManager

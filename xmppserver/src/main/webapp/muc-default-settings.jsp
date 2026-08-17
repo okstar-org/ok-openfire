@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2010 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2010 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
     errorPage="error.jsp"
 %>
 <%@ page import="java.net.URLEncoder" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c"%>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -38,6 +39,7 @@
 
     String publicRoom = ParamUtils.getParameter(request, "roomconfig_publicroom");
     String persistentRoom = ParamUtils.getParameter(request, "roomconfig_persistentroom");
+    String retireOnDeletion = ParamUtils.getParameter(request, "roomconfig_retireondel");
     String moderatedRoom = ParamUtils.getParameter(request, "roomconfig_moderatedroom");
     String membersOnly = ParamUtils.getParameter(request, "roomconfig_membersonly");
     String nonanonymous = ParamUtils.getParameter(request, "roomconfig_nonanonymous");
@@ -47,6 +49,7 @@
     String canChangeNick = ParamUtils.getParameter(request, "roomconfig_canchangenick");
     String registrationEnabled = ParamUtils.getParameter(request, "roomconfig_registration");
     String enableLog = ParamUtils.getParameter(request, "roomconfig_enablelogging");
+    String preserveHistOnRoomDeletion = ParamUtils.getParameter(request, "roomconfig_preservehistondel");
     String maxUsers = ParamUtils.getParameter(request, "roomconfig_maxusers");
     String broadcastModerator = ParamUtils.getParameter(request, "roomconfig_broadcastmoderator");
     String broadcastParticipant = ParamUtils.getParameter(request, "roomconfig_broadcastparticipant");
@@ -89,86 +92,98 @@
         } else {
             errors.put("allowpm", "allowpm");
         }
-        if (errors.size() == 0) {
-            if (publicRoom != null && publicRoom.trim().length() > 0) {
+        if (errors.isEmpty()) {
+            if (publicRoom != null && !publicRoom.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.publicRoom", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.publicRoom", "false");
             }
-            if (persistentRoom != null && persistentRoom.trim().length() > 0) {
+            if (persistentRoom != null && !persistentRoom.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.persistent", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.persistent", "false");
             }
-            if (moderatedRoom != null && moderatedRoom.trim().length() > 0) {
+            if (retireOnDeletion != null && !retireOnDeletion.trim().isEmpty()) {
+                MUCPersistenceManager.setProperty(mucname, "room.retireOnDeletion", "true");
+            }
+            else {
+                MUCPersistenceManager.setProperty(mucname, "room.retireOnDeletion", "false");
+            }
+            if (moderatedRoom != null && !moderatedRoom.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.moderated", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.moderated", "false");
             }
-            if (membersOnly != null && membersOnly.trim().length() > 0) {
+            if (membersOnly != null && !membersOnly.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.membersOnly", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.membersOnly", "false");
             }
-            if (nonanonymous != null && nonanonymous.trim().length() > 0) {
+            if (nonanonymous != null && !nonanonymous.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.canAnyoneDiscoverJID", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.canAnyoneDiscoverJID", "false");
             }
-            if (allowInvites != null && allowInvites.trim().length() > 0) {
+            if (allowInvites != null && !allowInvites.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.canOccupantsInvite", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.canOccupantsInvite", "false");
             }
-            if (changeSubject != null && changeSubject.trim().length() > 0) {
+            if (changeSubject != null && !changeSubject.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.canOccupantsChangeSubject", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.canOccupantsChangeSubject", "false");
             }
-            if (reservedNick != null && reservedNick.trim().length() > 0) {
+            if (reservedNick != null && !reservedNick.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.loginRestrictedToNickname", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.loginRestrictedToNickname", "false");
             }
-            if (canChangeNick != null && canChangeNick.trim().length() > 0) {
+            if (canChangeNick != null && !canChangeNick.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.canChangeNickname", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.canChangeNickname", "false");
             }
-            if (registrationEnabled != null && registrationEnabled.trim().length() > 0) {
+            if (registrationEnabled != null && !registrationEnabled.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.registrationEnabled", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.registrationEnabled", "false");
             }
-            if (enableLog != null && enableLog.trim().length() > 0) {
+            if (enableLog != null && !enableLog.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.logEnabled", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.logEnabled", "false");
             }
-            if (broadcastModerator != null && broadcastModerator.trim().length() > 0) {
+            if (preserveHistOnRoomDeletion != null && !preserveHistOnRoomDeletion.trim().isEmpty()) {
+                MUCPersistenceManager.setProperty(mucname, "room.preserveHistOnRoomDeletion", "true");
+            }
+            else {
+                MUCPersistenceManager.setProperty(mucname, "room.preserveHistOnRoomDeletion", "false");
+            }
+            if (broadcastModerator != null && !broadcastModerator.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.broadcastModerator", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.broadcastModerator", "false");
             }
-            if (broadcastParticipant != null && broadcastParticipant.trim().length() > 0) {
+            if (broadcastParticipant != null && !broadcastParticipant.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.broadcastParticipant", "true");
             }
             else {
                 MUCPersistenceManager.setProperty(mucname, "room.broadcastParticipant", "false");
             }
-            if (broadcastVisitor != null && broadcastVisitor.trim().length() > 0) {
+            if (broadcastVisitor != null && !broadcastVisitor.trim().isEmpty()) {
                 MUCPersistenceManager.setProperty(mucname, "room.broadcastVisitor", "true");
             }
             else {
@@ -176,7 +191,7 @@
             }
         }
 
-        response.sendRedirect("muc-default-settings.jsp?success=true&mucname="+URLEncoder.encode(mucname, "UTF-8"));
+        response.sendRedirect("muc-default-settings.jsp?success=true&mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8));
         return;
     }
 
@@ -185,6 +200,7 @@
     pageContext.setAttribute("mucname", mucname);
     pageContext.setAttribute("publicRoom", MUCPersistenceManager.getBooleanProperty(mucname, "room.publicRoom", true));
     pageContext.setAttribute("persistent", MUCPersistenceManager.getBooleanProperty(mucname, "room.persistent", false));
+    pageContext.setAttribute("retireOnDeletion", MUCPersistenceManager.getBooleanProperty(mucname, "room.retireOnDeletion", false));
     pageContext.setAttribute("moderated", MUCPersistenceManager.getBooleanProperty(mucname, "room.moderated", false));
     pageContext.setAttribute("membersOnly", MUCPersistenceManager.getBooleanProperty(mucname, "room.membersOnly", false));
     pageContext.setAttribute("canAnyoneDiscoverJID", MUCPersistenceManager.getBooleanProperty(mucname, "room.canAnyoneDiscoverJID", true));
@@ -194,6 +210,7 @@
     pageContext.setAttribute("canChangeNickname", MUCPersistenceManager.getBooleanProperty(mucname, "room.canChangeNickname", true));
     pageContext.setAttribute("registrationEnabled", MUCPersistenceManager.getBooleanProperty(mucname, "room.registrationEnabled", true));
     pageContext.setAttribute("logEnabled", MUCPersistenceManager.getBooleanProperty(mucname, "room.logEnabled", true));
+    pageContext.setAttribute("preserveHistOnRoomDeletion", MUCPersistenceManager.getBooleanProperty(mucname, "room.preserveHistOnRoomDeletion", true));
     pageContext.setAttribute("maxUsers", MUCPersistenceManager.getIntProperty(mucname, "room.maxUsers", 30));
     pageContext.setAttribute("broadcastModerator", MUCPersistenceManager.getBooleanProperty(mucname, "room.broadcastModerator", true));
     pageContext.setAttribute("broadcastParticipant", MUCPersistenceManager.getBooleanProperty(mucname, "room.broadcastParticipant", true));
@@ -208,7 +225,7 @@
     <head>
         <title><fmt:message key="muc.default.settings.title"/></title>
         <meta name="subPageID" content="muc-defaultsettings"/>
-        <meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, "UTF-8") %>"/>
+        <meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8) %>"/>
         <meta name="helpPage" content="set_group_chat_room_creation_permissions.html"/>
     </head>
 
@@ -263,6 +280,10 @@
                 <td><label for="persistentRoom"><fmt:message key="muc.default.settings.persistent_room" /></label></td>
             </tr>
             <tr>
+                <td><input name="roomconfig_retireondel" value="true" id="retireOnDeletion" type="checkbox" ${retireOnDeletion ? 'checked' : ''}></td>
+                <td><label for="retireOnDeletion"><fmt:message key="muc.default.settings.retire" /></label></td>
+            </tr>
+            <tr>
                 <td><input name="roomconfig_moderatedroom" value="true" id="moderated" type="checkbox" ${moderated ? 'checked' : ''}></td>
                 <td><label for="moderated"><fmt:message key="muc.default.settings.moderated" /></label></td>
             </tr>
@@ -297,6 +318,10 @@
             <tr>
                 <td><input name="roomconfig_enablelogging" value="true" id="enableLogging" type="checkbox" ${logEnabled ? 'checked' : ''}></td>
                 <td><label for="enableLogging"><fmt:message key="muc.default.settings.enable_logging" /></label></td>
+            </tr>
+            <tr>
+                <td><input name="roomconfig_preservehistondel" value="true" id="preserveHistOnRoomDeletion" type="checkbox" ${preserveHistOnRoomDeletion ? 'checked' : ''}></td>
+                <td><label for="preserveHistOnRoomDeletion"><fmt:message key="muc.default.settings.preserve_hist_on_room_deletion" /></label></td>
             </tr>
             <tr>
                 <td>&nbsp;</td>

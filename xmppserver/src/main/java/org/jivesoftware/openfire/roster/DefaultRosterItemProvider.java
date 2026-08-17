@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2021 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,8 +43,8 @@ import java.util.concurrent.ExecutionException;
  *
  * Rosters are another user resource accessed via the user or chatbot's long ID. A user/chatbot
  * may have zero or more roster items and each roster item may have zero or more groups. Each
- * roster item is additionaly keyed on a XMPP jid. In most cases, the entire roster will be read
- * in from memory and manipulated or sent to the user. However some operations will need to retrive
+ * roster item is additionally keyed on a XMPP jid. In most cases, the entire roster will be read
+ * in from memory and manipulated or sent to the user. However some operations will need to retrieve
  * specific roster items rather than the entire roster.
  *
  * @author Iain Shigeoka
@@ -66,6 +66,8 @@ public class DefaultRosterItemProvider implements RosterItemProvider {
             "DELETE FROM ofRoster WHERE rosterID=?";
     private static final String LOAD_USERNAMES =
             "SELECT DISTINCT username from ofRoster WHERE jid=?";
+    private static final String LOAD_USERNAMES_BY_DOMAIN =
+            "SELECT DISTINCT username FROM ofRoster WHERE jid=? OR jid LIKE ?";
     private static final String COUNT_ROSTER_ITEMS =
             "SELECT COUNT(rosterID) FROM ofRoster WHERE username=?";
      private static final String LOAD_ROSTER =
@@ -201,6 +203,31 @@ public class DefaultRosterItemProvider implements RosterItemProvider {
             con = DbConnectionManager.getConnection();
             pstmt = con.prepareStatement(LOAD_USERNAMES);
             pstmt.setString(1, jid);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                answer.add(rs.getString(1));
+            }
+        }
+        catch (SQLException e) {
+            Log.error(LocaleUtils.getLocalizedString("admin.error"), e);
+        }
+        finally {
+            DbConnectionManager.closeConnection(rs, pstmt, con);
+        }
+        return answer.iterator();
+    }
+
+    @Override
+    public Iterator<String> getUsernamesByDomain(final String domain) {
+        final List<String> answer = new ArrayList<>();
+        Connection con = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        try {
+            con = DbConnectionManager.getConnection();
+            pstmt = con.prepareStatement(LOAD_USERNAMES_BY_DOMAIN);
+            pstmt.setString(1, domain);
+            pstmt.setString(2, "%@" + domain);
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 answer.add(rs.getString(1));

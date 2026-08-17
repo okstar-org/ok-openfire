@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@
 <%@ page import="java.util.function.Predicate" %>
 <%@ page import="org.slf4j.LoggerFactory" %>
 <%@ page import="org.jivesoftware.openfire.group.SharedGroupVisibility" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="admin" prefix="admin" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c"%>
@@ -131,7 +132,7 @@
                 }
 
                 // Successful, so redirect
-                response.sendRedirect( "group-edit.jsp?groupChanged=true&group=" + URLEncoder.encode( group.getName(), "UTF-8" )
+                response.sendRedirect( "group-edit.jsp?groupChanged=true&group=" + URLEncoder.encode( group.getName(), StandardCharsets.UTF_8)
                     + ListPager.getQueryString(request, '&', "searchName") );
                 return;
             }
@@ -145,7 +146,7 @@
     // Handle a request to update the contact list settings.
     if ( updateContactListSettings )
     {
-        if (enableRosterGroups && (groupDisplayName == null || groupDisplayName.trim().length() == 0))
+        if (enableRosterGroups && (groupDisplayName == null || groupDisplayName.trim().isEmpty()))
         {
             errors.put("groupDisplayName", "Group display name cannot be null or empty.");
         }
@@ -187,7 +188,7 @@
             }
 
             // Get admin list and compare it the admin posted list.
-            response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, "UTF-8") + "&groupChanged=true"
+            response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, StandardCharsets.UTF_8) + "&groupChanged=true"
                 + ListPager.getQueryString(request, '&', "searchName") );
             return;
         }
@@ -227,7 +228,7 @@
         }
 
         // Get admin list and compare it the admin posted list.
-        response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, "UTF-8") + "&updatesuccess=true"
+        response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, StandardCharsets.UTF_8) + "&updatesuccess=true"
             + ListPager.getQueryString(request, '&', "searchName") );
         return;
     }
@@ -288,7 +289,7 @@
 
             if ( memberAdded )
             {
-                response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, "UTF-8") + "&success=true"
+                response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, StandardCharsets.UTF_8) + "&success=true"
                     + ListPager.getQueryString(request, '&', "searchName") );
                 return;
             }
@@ -302,15 +303,15 @@
             group.getMembers().remove(member);
             group.getAdmins().remove(member);
         }
-        response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, "UTF-8") + "&deletesuccess=true"
+        response.sendRedirect("group-edit.jsp?group=" + URLEncoder.encode(groupName, StandardCharsets.UTF_8) + "&deletesuccess=true"
             + ListPager.getQueryString(request, '&', "searchName") );
         return;
     }
 
-    success = groupInfoChanged || "true".equals(request.getParameter("success")) ||
-            "true".equals(request.getParameter("deletesuccess")) ||
-            "true".equals(request.getParameter("updatesuccess")) ||
-            "true".equals(request.getParameter("creategroupsuccess"));
+    success = groupInfoChanged || ParamUtils.getBooleanParameter(request, "success") ||
+            ParamUtils.getBooleanParameter(request, "deletesuccess") ||
+            ParamUtils.getBooleanParameter(request, "updatesuccess") ||
+            ParamUtils.getBooleanParameter(request, "creategroupsuccess");
 
     SharedGroupVisibility visibility = group.getSharedWith();
     if ( SharedGroupVisibility.usersOfGroups == visibility ) {
@@ -774,12 +775,7 @@
         }
         for (String anArray : array) {
             String item;
-            try {
-                item = URLDecoder.decode( anArray, "UTF-8" );
-            }
-            catch (UnsupportedEncodingException e) {
-                item = anArray;
-            }
+            item = URLDecoder.decode( anArray, StandardCharsets.UTF_8);
             result.add(item);
         }
         return result;

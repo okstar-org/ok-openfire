@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -135,22 +135,21 @@ public class ServerDialback {
      * certificate.
      */
     public static boolean isEnabledForSelfSigned() {
-        return JiveGlobals.getBooleanProperty(ConnectionSettings.Server.TLS_ACCEPT_SELFSIGNED_CERTS, false);
+        // Allowance for self-signed certificates is based on the configuration for all server-to-server connections.
+        return XMPPServer.getInstance().getConnectionManager().getListener(ConnectionType.SOCKET_S2S, false).acceptSelfSignedCertificates();
     }
 
     /**
-     * Sets if server dialback can be used when the remote server presented a self-signed
-     * certificate. During TLS the remote server can present a self-signed certificate, if this
-     * setting is enabled then the self-signed certificate will be accepted and if SASL EXTERNAL
-     * is not offered then server dialback will be used for verifying the remote server.<p>
+     * This (unexpectedly/incorrectly) affected the configuration of all socket-s2s connections, not just those of
+     * Dialback connections. This is unlikely what is desired.
      *
-     * If self-signed certificates are accepted then server dialback over TLS is enabled.
-     *
-     * @param enabled if server dialback can be used when the remote server presented a self-signed
-     * certificate.
+     * @param enabled if server dialback can be used when the remote server presented a self-signed certificate.
+     * @deprecated Instead, set the connection listener property for socket-s2s connections in {@link org.jivesoftware.openfire.spi.ConnectionListener#setAcceptSelfSignedCertificates(boolean)}
      */
-    public static void setEnabledForSelfSigned(boolean enabled) {
-        JiveGlobals.setProperty(ConnectionSettings.Server.TLS_ACCEPT_SELFSIGNED_CERTS, Boolean.toString(enabled));
+    @Deprecated(forRemoval = true, since = "5.1.0")
+    public static void setEnabledForSelfSigned(boolean enabled)
+    {
+        XMPPServer.getInstance().getConnectionManager().getListener(ConnectionType.SOCKET_S2S, false).setAcceptSelfSignedCertificates(enabled);
     }
 
     /**
@@ -474,7 +473,7 @@ public class ServerDialback {
                 }
             }
             catch (Exception e) {
-                Log.error("An error occured while creating a server session", e);
+                Log.error("An error occurred while creating a server session", e);
                 // Close the underlying connection
                 connection.close();
                 return null;
@@ -843,23 +842,14 @@ public class ServerDialback {
         // Set a read timeout
         socket.setSoTimeout(RemoteServerManager.getSocketTimeout());
         VerifyResult result = VerifyResult.error;
-        try {
+        try (socket) {
             reader = new XMPPPacketReader();
             reader.setXPPFactory(FACTORY);
 
             reader.getXPPParser().setInput(new InputStreamReader(socket.getInputStream(), CHARSET));
             // Get a writer for sending the open stream tag
             writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), CHARSET));
-            result = sendVerifyKey(key, streamID, recipient, remoteDomain, writer, reader, socket, skipTLS, directTLS );
-        }
-        finally {
-            try {
-                // Close the TCP connection
-                socket.close();
-            }
-            catch (IOException ioe) {
-                // Do nothing
-            }
+            result = sendVerifyKey(key, streamID, recipient, remoteDomain, writer, reader, socket, skipTLS, directTLS);
         }
 
         switch ( result ) {

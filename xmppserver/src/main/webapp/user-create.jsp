@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -20,18 +20,24 @@
                  org.jivesoftware.openfire.user.*,
                  java.net.URLEncoder,
                  gnu.inet.encoding.Stringprep,
-                 gnu.inet.encoding.StringprepException"
+                 gnu.inet.encoding.StringprepException,
+                 java.util.stream.Collectors"
     errorPage="error.jsp"
 %>
+<%@ page import="java.util.List"%>
 <%@ page import="java.util.Map"%>
-<%@ page import="java.util.HashMap"%><%@ page import="org.xmpp.packet.JID"%>
+<%@ page import="java.util.HashMap"%>
+<%@ page import="org.xmpp.packet.JID"%>
 <%@ page import="org.jivesoftware.openfire.security.SecurityAuditManager" %>
 <%@ page import="org.jivesoftware.openfire.admin.AdminManager" %>
 <%@ page import="org.jivesoftware.openfire.group.GroupNotFoundException" %>
+<%@ page import="org.jivesoftware.openfire.group.Group" %>
 <%@ page import="org.slf4j.LoggerFactory" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
+<%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
 <%@ taglib prefix="admin" uri="admin" %>
 
 <jsp:useBean id="webManager" class="org.jivesoftware.util.WebManager"  />
@@ -68,6 +74,10 @@
         return;
     }
 
+    List<String> groupNames = webManager.getGroupManager().getGroups()
+                           .stream()
+                           .map(Group::getName)
+                           .collect(Collectors.toList());
     // Handle a request to create a user:
     if (create) {
         // Validate
@@ -87,7 +97,7 @@
         // Trim the password. This means we don't accept spaces as passwords. We don't
         // trim the passwordConfirm as well since not trimming will ensure the user doesn't
         // think space is an ok password character.
-        if (password == null || password.trim().equals("")) {
+        if (password == null || password.trim().isEmpty()) {
             errors.put("password","");
         }
         if (passwordConfirm == null) {
@@ -104,22 +114,20 @@
         }
         // If provider requires name, validate
         if (UserManager.getUserProvider().isNameRequired()) {
-            if (name == null || name.equals("")) {
+            if (name == null || name.isEmpty()) {
                 errors.put("name","");
             }
         }
 
         //If a group name is entered and there is no matching group, add an error
         if (group != null && !group.trim().isEmpty()){
-            try{
-                webManager.getGroupManager().getGroup(group);
-            } catch (GroupNotFoundException e){
+            if (!groupNames.contains(group)) {
                 errors.put("groupNotFound","");
             }
         }
 
         // do a create if there were no errors
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             try {
                 User newUser = webManager.getUserManager().createUser(username, password, name, email);
 
@@ -153,7 +161,7 @@
                 }
                 else {
                     response.sendRedirect("user-properties.jsp?success=true&username=" +
-                            URLEncoder.encode(newUser.getUsername(), "UTF-8"));
+                            URLEncoder.encode(newUser.getUsername(), StandardCharsets.UTF_8));
                 }
                 return;
             }
@@ -167,6 +175,7 @@
         }
     }
     pageContext.setAttribute("errors", errors);
+    pageContext.setAttribute("groupNames", groupNames);
     pageContext.setAttribute("success", request.getParameter("success") != null);
 %>
 
@@ -233,23 +242,23 @@
         <tr>
             <td style="width: 1%; white-space: nowrap"><label for="usernametf"><fmt:message key="user.create.username" />:</label> *</td>
             <td>
-                <input type="text" name="username" size="30" maxlength="75" value="<%= ((username!=null) ? StringUtils.escapeForXML(username) : "") %>"
+                <input type="text" name="username" size="30" maxlength="75" value="<%= StringUtils.escapeForXML(username) %>"
                  id="usernametf" autocomplete="off">
             </td>
         </tr>
         <tr>
             <td style="width: 1%; white-space: nowrap"><label for="nametf"><fmt:message key="user.create.name" />:</label> <%= UserManager.getUserProvider().isNameRequired() ? "*" : "" %></td>
             <td>
-                <input type="text" name="name" size="30" maxlength="75" value="<%= ((name!=null) ? StringUtils.escapeForXML(name) : "") %>"
-                 id="nametf">
+                <input type="text" name="name" size="30" maxlength="75" value="<%= StringUtils.escapeForXML(name) %>"
+                 id="nametf" autocomplete="off">
             </td>
         </tr>
         <tr>
             <td style="width: 1%; white-space: nowrap">
                 <label for="emailtf"><fmt:message key="user.create.email" />:</label> <%= UserManager.getUserProvider().isEmailRequired() ? "*" : "" %></td>
             <td>
-                <input type="text" name="email" size="30" maxlength="75" value="<%= ((email!=null) ? StringUtils.escapeForXML(email) : "") %>"
-                 id="emailtf">
+                <input type="text" name="email" size="30" maxlength="75" value="<%= StringUtils.escapeForXML(email) %>"
+                 id="emailtf" autocomplete="off">
             </td>
         </tr>
         <tr>
@@ -258,7 +267,7 @@
             </td>
             <td>
                 <input type="password" name="password" value="" size="20" maxlength="75"
-                 id="passtf">
+                 id="passtf" autocomplete="off">
             </td>
         </tr>
         <tr>
@@ -267,7 +276,7 @@
             </td>
             <td>
                 <input type="password" name="passwordConfirm" value="" size="20" maxlength="75"
-                 id="confpasstf">
+                 id="confpasstf" autocomplete="off">
             </td>
         </tr>
         <% if (!AdminManager.getAdminProvider().isReadOnly()) { %>
@@ -281,17 +290,24 @@
             </td>
         </tr>
         <% } %>
-        <% if (!webManager.getGroupManager().getGroups().isEmpty()){%>
+        <c:if test="${not empty groupNames}">
         <tr>
             <td class="c1">
                 <label for="grouptf"><fmt:message key="user.create.group"/>:</label>
             </td>
             <td>
-                <input type="text" name="group" size="30" maxlength="75" value="<%= ((group!=null) ? StringUtils.escapeForXML(group) : "") %>"
-                       id="grouptf">
+                <input type="text" name="group" size="30" maxlength="75" value="<%= StringUtils.escapeForXML(group) %>"
+                       id="grouptf" autocomplete="off" list="groupNames" >
+                <datalist id="groupNames">
+                    <c:forEach var="groupName" items="${groupNames}">
+                        <option value="${fn:escapeXml(groupName)}">
+                            <c:out value="${groupName}"/>
+                        </option>
+                    </c:forEach>
+                </datalist>
             </td>
         </tr>
-        <%} %>
+        </c:if>
         <tr>
 
             <td colspan="2" style="padding-top: 10px;">

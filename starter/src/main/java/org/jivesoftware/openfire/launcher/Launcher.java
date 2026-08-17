@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,6 @@ import java.awt.MenuItem;
 import java.awt.PopupMenu;
 import java.awt.SystemTray;
 import java.awt.TrayIcon;
-import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
@@ -67,9 +66,11 @@ import javax.swing.text.BadLocationException;
 import javax.swing.text.SimpleAttributeSet;
 import javax.swing.text.StyleConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.xml.sax.SAXException;
 
 import static javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD;
 import static javax.xml.XMLConstants.ACCESS_EXTERNAL_SCHEMA;
@@ -225,68 +226,62 @@ public class Launcher {
         browserMenuItem.setEnabled(false);
         stopMenuItem.setEnabled(false);
 
-        ActionListener actionListener = new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if ("Start".equals(e.getActionCommand())) {
-                    frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
-                    // Adjust button and menu items.
-                    startButton.setEnabled(false);
-                    stopButton.setEnabled(true);
-                    startMenuItem.setEnabled(false);
-                    stopMenuItem.setEnabled(true);
+        ActionListener actionListener = e -> {
+            if ("Start".equals(e.getActionCommand())) {
+                frame.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+                // Adjust button and menu items.
+                startButton.setEnabled(false);
+                stopButton.setEnabled(true);
+                startMenuItem.setEnabled(false);
+                stopMenuItem.setEnabled(true);
 
-                    // Startup Application
-                    startApplication();
+                // Startup Application
+                startApplication();
 
-                    // Change to the "on" icon.
-                    frame.setIconImage(onIcon.getImage());
-                    trayIcon.setImage(onIcon.getImage());
+                // Change to the "on" icon.
+                frame.setIconImage(onIcon.getImage());
+                trayIcon.setImage(onIcon.getImage());
 
-                    // Start a thread to enable the admin button after 8 seconds.
-                    Thread thread = new Thread() {
-                        @Override
-                        public void run() {
-                            try {
-                                sleep(8000);
-                            }
-                            catch (InterruptedException ie) {
-                                // Ignore.
-                            }
-                            // Enable the Launch Admin button/menu item only if the
-                            // server has started.
-                            if (stopButton.isEnabled()) {
-                                browserButton.setEnabled(true);
-                                browserMenuItem.setEnabled(true);
-                                frame.setCursor(Cursor.getDefaultCursor());
-                            }
-                        }
-                    };
-                    thread.start();
-                }
-                else if ("Stop".equals(e.getActionCommand())) {
-                    stopApplication();
-                    // Change to the "off" button.
-                    frame.setIconImage(offIcon.getImage());
-                    trayIcon.setImage(offIcon.getImage());
-                    // Adjust buttons and menu items.
-                    frame.setCursor(Cursor.getDefaultCursor());
-                    browserButton.setEnabled(false);
-                    startButton.setEnabled(true);
-                    stopButton.setEnabled(false);
-                    browserMenuItem.setEnabled(false);
-                    startMenuItem.setEnabled(true);
-                    stopMenuItem.setEnabled(false);
-                }
-                else if ("Launch Admin".equals(e.getActionCommand())) {
-                    launchBrowser();
-                } else if ("Quit".equals(e.getActionCommand())) {
-                    stopApplication();
-                    System.exit(0);
-                }
-                else if ("Hide/Show".equals(e.getActionCommand()) || "PressAction".equals(e.getActionCommand())) {
-                    toggleVisibility(showMenuItem);
-                }
+                // Start a thread to enable the admin button after 8 seconds.
+                Thread thread = new Thread(() -> {
+                    try {
+                        Thread.sleep(8000);
+                    }
+                    catch (InterruptedException ie) {
+                        // Ignore.
+                    }
+                    // Enable the Launch Admin button/menu item only if the
+                    // server has started.
+                    if (stopButton.isEnabled()) {
+                        browserButton.setEnabled(true);
+                        browserMenuItem.setEnabled(true);
+                        frame.setCursor(Cursor.getDefaultCursor());
+                    }
+                });
+                thread.start();
+            }
+            else if ("Stop".equals(e.getActionCommand())) {
+                stopApplication();
+                // Change to the "off" button.
+                frame.setIconImage(offIcon.getImage());
+                trayIcon.setImage(offIcon.getImage());
+                // Adjust buttons and menu items.
+                frame.setCursor(Cursor.getDefaultCursor());
+                browserButton.setEnabled(false);
+                startButton.setEnabled(true);
+                stopButton.setEnabled(false);
+                browserMenuItem.setEnabled(false);
+                startMenuItem.setEnabled(true);
+                stopMenuItem.setEnabled(false);
+            }
+            else if ("Launch Admin".equals(e.getActionCommand())) {
+                launchBrowser();
+            } else if ("Quit".equals(e.getActionCommand())) {
+                stopApplication();
+                System.exit(0);
+            }
+            else if ("Hide/Show".equals(e.getActionCommand()) || "PressAction".equals(e.getActionCommand())) {
+                toggleVisibility(showMenuItem);
             }
         };
 
@@ -461,9 +456,11 @@ public class Launcher {
             }
 
             final SimpleAttributeSet styles = new SimpleAttributeSet();
-            SwingWorker<String, Void> inputWorker = new SwingWorker<String, Void>() {
+            SwingWorker<String, Void> inputWorker = new SwingWorker<>()
+            {
                 @Override
-                public String doInBackground() {
+                public String doInBackground()
+                {
                     if (openfired != null) {
                         // Get the input stream and read from it
                         try (InputStream in = openfired.getInputStream()) {
@@ -472,14 +469,12 @@ public class Launcher {
                                 try {
                                     StyleConstants.setFontFamily(styles, "courier new");
                                     pane.getDocument().insertString(pane.getDocument().getLength(),
-                                            "" + (char)c, styles);
-                                }
-                                catch (BadLocationException e) {
+                                        "" + (char) c, styles);
+                                } catch (BadLocationException e) {
                                     // Ignore.
                                 }
                             }
-                        }
-                        catch (IOException e) {
+                        } catch (IOException e) {
                             e.printStackTrace();
                         }
                     }
@@ -489,9 +484,11 @@ public class Launcher {
             inputWorker.execute();
 
 
-            SwingWorker<String, Void> errorWorker = new SwingWorker<String, Void>() {
+            SwingWorker<String, Void> errorWorker = new SwingWorker<>()
+            {
                 @Override
-                public String doInBackground() {
+                public String doInBackground()
+                {
                     if (openfired != null) {
                         // Get the input stream and read from it
                         try (InputStream in = openfired.getErrorStream()) {
@@ -499,14 +496,12 @@ public class Launcher {
                             while ((c = in.read()) != -1) {
                                 try {
                                     StyleConstants.setForeground(styles, Color.red);
-                                    pane.getDocument().insertString(pane.getDocument().getLength(), "" + (char)c, styles);
-                                }
-                                catch (BadLocationException e) {
+                                    pane.getDocument().insertString(pane.getDocument().getLength(), "" + (char) c, styles);
+                                } catch (BadLocationException e) {
                                     // Ignore.
                                 }
                             }
-                        }
-                        catch (IOException e) {
+                        } catch (IOException e) {
                             e.printStackTrace();
                         }
                     }
@@ -544,17 +539,14 @@ public class Launcher {
                     out.write("exit\n");
                 }
                 final Thread waiting = Thread.currentThread();
-                Thread waiter = new Thread() {
-                    @Override
-                    public void run() {
-                        try {
-                            // wait for the openfire server to stop
-                            openfired.waitFor();
-                            waiting.interrupt();
-                        }
-                        catch (InterruptedException ie) { /* ignore */ }
+                Thread waiter = new Thread(() -> {
+                    try {
+                        // wait for the openfire server to stop
+                        openfired.waitFor();
+                        waiting.interrupt();
                     }
-                };
+                    catch (InterruptedException ie) { /* ignore */ }
+                });
                 waiter.start();
                 try {
                     // wait for a maximum of ten seconds
@@ -573,14 +565,21 @@ public class Launcher {
         openfired = null;
     }
 
+    // @VisibleForTesting
+    static Document parse(final File configFile) throws ParserConfigurationException, IOException, SAXException
+    {
+        // Note, we use standard DOM to read in the XML. This is necessary so that
+        // Launcher has fewer dependencies.
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setAttribute(ACCESS_EXTERNAL_DTD, "");
+        factory.setAttribute(ACCESS_EXTERNAL_SCHEMA, "");
+
+        return factory.newDocumentBuilder().parse(configFile);
+    }
+
     private synchronized void launchBrowser() {
         try {
-            // Note, we use standard DOM to read in the XML. This is necessary so that
-            // Launcher has fewer dependencies.
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setAttribute(ACCESS_EXTERNAL_DTD, "");
-            factory.setAttribute(ACCESS_EXTERNAL_SCHEMA, "");
-            Document document = factory.newDocumentBuilder().parse(configFile);
+            Document document = parse(configFile);
             Element rootElement = document.getDocumentElement();
             Element adminElement = (Element)rootElement.getElementsByTagName("adminConsole").item(0);
             String port = "-1";
@@ -617,9 +616,11 @@ public class Launcher {
         dialog.pack();
         dialog.setSize(225, 55);
 
-        final SwingWorker<File, Void> installerThread = new SwingWorker<File, Void>() {
+        final SwingWorker<File, Void> installerThread = new SwingWorker<>()
+        {
             @Override
-            public File doInBackground() {
+            public File doInBackground()
+            {
                 File pluginsDir = new File(binDir.getParentFile(), "plugins");
                 String tempName = plugin.getName() + ".part";
                 File tempPluginsFile = new File(pluginsDir, tempName);
@@ -635,15 +636,15 @@ public class Launcher {
 
                     // If successfull, rename to real plugin name.
                     tempPluginsFile.renameTo(realPluginsFile);
-                }
-                catch (Exception e) {
+                } catch (Exception e) {
                     e.printStackTrace();
                 }
                 return realPluginsFile;
             }
 
             @Override
-            public void done() {
+            public void done()
+            {
                 dialog.setVisible(false);
             }
         };

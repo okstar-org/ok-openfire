@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2009 Jive Software, 2017-2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2009 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,10 @@ public class IQLastActivityHandler extends IQHandler implements ServerFeaturesPr
 
     @Override
     public IQ handleIQ(IQ packet) throws UnauthorizedException {
+        if ( packet.isResponse() ) {
+            return null;
+        }
+
         IQ reply = IQ.createResultIQ(packet);
         Element lastActivity = reply.setChildElement("query", NAMESPACE);
         String sender = packet.getFrom().getNode();
@@ -93,7 +97,7 @@ public class IQLastActivityHandler extends IQHandler implements ServerFeaturesPr
                         }
                         lastActivity.addAttribute("seconds", String.valueOf(lastActivityTime));
                         String lastStatus = presenceManager.getLastPresenceStatus(user);
-                        if (lastStatus != null && lastStatus.length() > 0) {
+                        if (lastStatus != null && !lastStatus.isEmpty()) {
                             lastActivity.setText(lastStatus);
                         }
                     } else {

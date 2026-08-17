@@ -4,17 +4,19 @@ Version: %{OPENFIRE_VERSION}
 Release: %{OPENFIRE_RELEASE}
 BuildRoot: %{_builddir}/%{name}-root
 Source0: %{OPENFIRE_SOURCE}
-%ifarch noarch
 # Note that epoch is set here to 1, this appears to be consistent with non-Redhat
 # jres as well due to an ancient problem with java-1.5.0-ibm jpackage RPM
-Requires: java >= 1:11.0.0
-%endif
+Requires: java >= 1:17.0.0
 Group: Applications/Communications
 Vendor: Igniterealtime Community
 Packager: Igniterealtime Community
 License: Apache license v2.0
 AutoReqProv: no
 URL: https://igniterealtime.org/projects/openfire/
+
+# OF-2907 default older compression, so to support older Linuxes
+%define _source_payload w9.gzdio
+%define _binary_payload w9.gzdio
 
 %define prefix /opt
 %define homedir %{prefix}/openfire
@@ -41,12 +43,6 @@ rm -rf $RPM_BUILD_ROOT
 mkdir -p $RPM_BUILD_ROOT%{prefix}
 # Copy over the main install tree.
 cp -R . $RPM_BUILD_ROOT%{homedir}
-%ifnarch noarch
-# Set up distributed JRE
-pushd $RPM_BUILD_ROOT%{homedir}
-gzip -cd %{SOURCE1} | tar xvf -
-popd
-%endif
 # Set up the init script.
 mkdir -p $RPM_BUILD_ROOT/etc/init.d
 cp $RPM_BUILD_ROOT%{homedir}/bin/extra/redhat/openfire $RPM_BUILD_ROOT/etc/init.d/openfire
@@ -72,6 +68,9 @@ rm -rf $RPM_BUILD_ROOT%{homedir}/resources/nativeAuth/osx-ppc
 rm -rf $RPM_BUILD_ROOT%{homedir}/resources/nativeAuth/win32-x86
 rm -f $RPM_BUILD_ROOT%{homedir}/lib/*.dll
 rm -f $RPM_BUILD_ROOT%{homedir}/conf/openfire-demoboot.xml
+rm -f $RPM_BUILD_ROOT%{homedir}/dist/etc/ufw/applications.d/openfire
+rm -f $RPM_BUILD_ROOT%{homedir}/dist/usr/lib/systemd/system/openfire.service
+rm -f $RPM_BUILD_ROOT%{homedir}/dist/usr/lib/systemd/system/openfire.slice
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -137,15 +136,13 @@ exit 0
 %config(noreplace) %{homedir}/resources/security/keystore
 %config(noreplace) %{homedir}/resources/security/truststore
 %config(noreplace) %{homedir}/resources/security/client.truststore
+%config(noreplace) %{homedir}/resources/security/java.security
 %doc %{homedir}/documentation
 %doc %{homedir}/LICENSE.html 
 %doc %{homedir}/README.html 
 %doc %{homedir}/changelog.html
 %{_sysconfdir}/init.d/openfire
 %config(noreplace) %{_sysconfdir}/sysconfig/openfire
-%ifnarch noarch
-%{homedir}/jre
-%endif
 
 %changelog
 * %{OPENFIRE_BUILDDATE} Igniterealtime Community <webmaster@igniterealtime.org> %{OPENFIRE_VERSION}-%{OPENFIRE_RELEASE}

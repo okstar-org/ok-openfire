@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,7 @@ package org.jivesoftware.openfire.session;
 
 import org.dom4j.*;
 import org.dom4j.io.XMPPPacketReader;
-import org.jivesoftware.openfire.Connection;
-import org.jivesoftware.openfire.PacketException;
-import org.jivesoftware.openfire.SessionManager;
-import org.jivesoftware.openfire.StreamID;
+import org.jivesoftware.openfire.*;
 import org.jivesoftware.openfire.auth.AuthFactory;
 import org.jivesoftware.openfire.component.ExternalComponentManager;
 import org.jivesoftware.openfire.component.InternalComponentManager;
@@ -38,8 +35,10 @@ import org.xmpp.packet.Packet;
 import org.xmpp.packet.StreamError;
 
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Represents a session between the server and a component.
@@ -54,7 +53,7 @@ public class LocalComponentSession extends LocalSession implements ComponentSess
     private LocalExternalComponent component;
     /**
      * When using XEP-114 (the old spec) components will include in the TO attribute
-     * of the intial stream header the domain they would like to have. The requested
+     * of the initial stream header the domain they would like to have. The requested
      * domain is used only after the authentication was successful so we need keep track
      * of this information until the handshake is done.  
      */
@@ -64,7 +63,7 @@ public class LocalComponentSession extends LocalSession implements ComponentSess
      * Returns a newly created session between the server and a component. The session will be
      * created and returned only if all the checkings were correct.<p>
      *
-     * A domain will be binded for the new connecting component. This method is following
+     * A domain will be bound for the new connecting component. This method is following
      * the JEP-114 where the domain to bind is sent in the TO attribute of the stream header.
      *
      * @param serverName the name of the server where the session is connecting to.
@@ -134,8 +133,17 @@ public class LocalComponentSession extends LocalSession implements ComponentSess
 
         // Create a ComponentSession for the external component
         LocalComponentSession session = SessionManager.getInstance().createComponentSession(componentJID, connection);
-        connection.registerCloseListener( handback -> SessionManager.getInstance().removeComponentSession( (LocalComponentSession) handback ), session );
-
+        connection.registerCloseListener(new ConnectionCloseListener() {
+            @Override
+            public CompletableFuture<Void> onConnectionClosing(@Nullable Object handback) {
+                return CompletableFuture.runAsync(() -> SessionManager.getInstance().removeComponentSession((LocalComponentSession) handback));
+            }
+            @Override
+            public int getPriority() {
+                // Openfire's built-in listeners should use a higher priority than listeners implemented by plugins / third parties.
+                return ConnectionCloseListener.PRIO_BUILT_IN;
+            }
+        }, session);
         session.component = new LocalExternalComponent(session, connection);
 
         try {
@@ -191,7 +199,7 @@ public class LocalComponentSession extends LocalSession implements ComponentSess
     }
 
     @Override
-    boolean canProcess(Packet packet) {
+    boolean canDeliver(@Nonnull final Packet stanza) {
         return true;
     }
 
@@ -233,7 +241,17 @@ public class LocalComponentSession extends LocalSession implements ComponentSess
             ExternalComponent component = getExternalComponent();
             try {
                 InternalComponentManager.getInstance().addComponent(defaultSubdomain, component);
-                conn.registerCloseListener( handback -> InternalComponentManager.getInstance().removeComponent( defaultSubdomain, (ExternalComponent) handback ), component );
+                conn.registerCloseListener(new ConnectionCloseListener() {
+                    @Override
+                    public CompletableFuture<Void> onConnectionClosing(@Nullable Object handback) {
+                        return CompletableFuture.runAsync(() -> InternalComponentManager.getInstance().removeComponent(defaultSubdomain, (ExternalComponent) handback));
+                    }
+                    @Override
+                    public int getPriority() {
+                        // Openfire's built-in listeners should use a higher priority than listeners implemented by plugins / third parties.
+                        return ConnectionCloseListener.PRIO_BUILT_IN;
+                    }
+                }, component);
                 Log.debug("LocalComponentSession: [ExComp] External component was registered SUCCESSFULLY with domain: {}", defaultSubdomain);
                 return true;
             }
@@ -271,7 +289,7 @@ public class LocalComponentSession extends LocalSession implements ComponentSess
         private String type = "";
         private String category = "";
         /**
-         * List of subdomains that were binded for this component. The list will include
+         * List of subdomains that were bound for this component. The list will include
          * the initial subdomain.
          */
         private List<String> subdomains = new ArrayList<>();

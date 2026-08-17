@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@
 <%@ page import="java.util.Date"%>
 <%@ page import="org.jivesoftware.openfire.cluster.ClusterManager" %>
 <%@ page import="org.jivesoftware.openfire.session.LocalSession" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -66,6 +67,7 @@
         try {
             Session sess = sessionManager.getComponentSession(jid);
             if (sess != null) {
+                sess.markNonResumable();
                 sess.close();
             }
             // Log the event
@@ -191,7 +193,7 @@
     <tr>
         <td style="width: 1%; white-space: nowrap"><%= count %></td>
         <td style="width: 43%; white-space: nowrap" nowrap>
-            <a href="component-session-details.jsp?jid=<%= URLEncoder.encode(componentSession.getAddress().toString(), "UTF-8") %>" title="<fmt:message key="session.row.click" />"><%= componentSession.getAddress() %></a>
+            <a href="component-session-details.jsp?jid=<%= URLEncoder.encode(componentSession.getAddress().toString(), StandardCharsets.UTF_8) %>" title="<fmt:message key="session.row.click" />"><%= componentSession.getAddress() %></a>
         </td>
         <td style="width: 1%">
             <%  if (componentSession.isEncrypted()) {
@@ -214,17 +216,8 @@
             <table>
             <tr style="text-align: center">
             <% if ("gateway".equals(componentSession.getExternalComponent().getCategory())) {
-                if ("msn".equals(componentSession.getExternalComponent().getType())) { %>
-                <td><img src="images/msn.gif" alt="MSN"></td>
-             <% }
-                else if ("aim".equals(componentSession.getExternalComponent().getType())) { %>
+                if ("aim".equals(componentSession.getExternalComponent().getType())) { %>
                 <td><img src="images/aim.gif" alt="AIM"></td>
-             <% }
-                else if ("yahoo".equals(componentSession.getExternalComponent().getType())) { %>
-                <td><img src="images/yahoo.gif" alt="Yahoo!"></td>
-             <% }
-                else if ("icq".equals(componentSession.getExternalComponent().getType())) { %>
-                <td><img src="images/icq.gif" alt="ICQ"></td>
              <% }
                 else if ("irc".equals(componentSession.getExternalComponent().getType())) { %>
                 <td><img src="images/irc.gif" alt="IRC"></td>
@@ -264,7 +257,7 @@
         </td>
 
         <td style="width: 1%; white-space: nowrap; text-align: center">
-            <a href="component-session-summary.jsp?jid=<%= URLEncoder.encode(componentSession.getAddress().toString(), "UTF-8") %>&close=true"
+            <a href="component-session-summary.jsp?jid=<%= URLEncoder.encode(componentSession.getAddress().toString(), StandardCharsets.UTF_8) %>&close=true"
              title="<fmt:message key="session.row.click_kill_session" />"
              onclick="return confirm('<fmt:message key="session.row.confirm_close" />');"
              ><img src="images/delete-16x16.gif" alt=""></a>

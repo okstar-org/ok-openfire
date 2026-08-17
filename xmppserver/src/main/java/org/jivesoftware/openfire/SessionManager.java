@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.jivesoftware.openfire;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Multimap;
 import org.jivesoftware.openfire.audit.AuditStreamIDFactory;
 import org.jivesoftware.openfire.auth.AuthToken;
@@ -28,6 +29,8 @@ import org.jivesoftware.openfire.container.BasicModule;
 import org.jivesoftware.openfire.event.SessionEventDispatcher;
 import org.jivesoftware.openfire.http.HttpConnection;
 import org.jivesoftware.openfire.http.HttpSession;
+import org.jivesoftware.openfire.mbean.ThreadPoolExecutorDelegate;
+import org.jivesoftware.openfire.mbean.ThreadPoolExecutorDelegateMBean;
 import org.jivesoftware.openfire.multiplex.ConnectionMultiplexerManager;
 import org.jivesoftware.openfire.nio.NettyClientConnectionHandler;
 import org.jivesoftware.openfire.nio.OfflinePacketDeliverer;
@@ -35,27 +38,26 @@ import org.jivesoftware.openfire.server.OutgoingSessionPromise;
 import org.jivesoftware.openfire.session.*;
 import org.jivesoftware.openfire.spi.BasicStreamIDFactory;
 import org.jivesoftware.openfire.spi.ConnectionType;
-import org.jivesoftware.util.JiveGlobals;
-import org.jivesoftware.util.LocaleUtils;
-import org.jivesoftware.util.SystemProperty;
-import org.jivesoftware.util.TaskEngine;
+import org.jivesoftware.openfire.streammanagement.TerminationDelegate;
+import org.jivesoftware.util.*;
 import org.jivesoftware.util.cache.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.xmpp.packet.JID;
-import org.xmpp.packet.Message;
-import org.xmpp.packet.Packet;
-import org.xmpp.packet.Presence;
+import org.xmpp.packet.*;
 
 import javax.annotation.Nonnull;
+import javax.management.ObjectName;
 import java.net.UnknownHostException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.LinkedList;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -73,6 +75,48 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         .setDynamic(true)
         .setDefaultValue(0)
         .setMinValue(-1)
+        .build();
+
+    /**
+     * The maximum amount of time to wait for a cluster-wide lock on a resource-binding conflict resolution service.
+     */
+    private static final SystemProperty<Duration> BIND_CONFLICT_SERVICE_LOCK_TIMEOUT = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("xmpp.session.bind.conflict.lock-timeout")
+        .setDefaultValue(Duration.ofSeconds(1))
+        .setMinValue(Duration.ZERO)
+        .setChronoUnit(ChronoUnit.MILLIS)
+        .setDynamic(true)
+        .build();
+
+    /**
+     * The number of threads to keep in the thread pool used for resource-binding conflict resolution, even if they are idle.
+     */
+    public static final SystemProperty<Integer> BIND_CONFLICT_SERVICE_CORE_POOL_SIZE = SystemProperty.Builder.ofType(Integer.class)
+        .setKey("xmpp.session.bind.conflict.core-pool-size")
+        .setMinValue(0)
+        .setDefaultValue(0)
+        .setDynamic(false)
+        .build();
+
+    /**
+     * The maximum number of threads to allow in the thread pool used for resource-binding conflict resolution.
+     */
+    public static final SystemProperty<Integer> BIND_CONFLICT_SERVICE_MAX_POOL_SIZE = SystemProperty.Builder.ofType(Integer.class)
+        .setKey("xmpp.session.bind.conflict.maximum-pool-size")
+        .setMinValue(1)
+        .setDefaultValue(25)
+        .setDynamic(false)
+        .build();
+
+    /**
+     * When the number of threads in the thread pool used for resource-binding conflict resolution is greater than the core, this is the maximum time that excess idle threads will wait for new tasks before terminating.
+     */
+    public static final SystemProperty<Duration> BIND_CONFLICT_SERVICE_KEEP_ALIVE_TIME = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("xmpp.session.bind.conflict.keep_alive_time")
+        .setChronoUnit(ChronoUnit.SECONDS)
+        .setMinValue(Duration.ofMillis(0))
+        .setDefaultValue(Duration.ofMinutes(1))
+        .setDynamic(false)
         .build();
 
     public static final String COMPONENT_SESSION_CACHE_NAME = "Components Sessions";
@@ -187,6 +231,21 @@ public class SessionManager extends BasicModule implements ClusterEventListener
      */
     private Cache<String, ArrayList<StreamID>> domainSessionsCache;
 
+    /**
+     * Executor for resource-binding conflict resolution. Bind conflict resolution can block (it may make synchronous
+     * cluster calls to close a session hosted on another node), so it must NOT run on a packet-processing worker thread
+     * as doing so starves that pool during mass reconnects. This dedicated, bounded pool isolates that
+     * blocking work; when saturated, binds are rejected (fail closed) but general packet processing is unaffected.
+     *
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3319">OF-3319</a>
+     */
+    private ThreadPoolExecutor bindConflictExecutor;
+
+    /**
+     * Object name used to register delegate MBean (JMX) for the 'session-bind-conflict' thread pool executor.
+     */
+    private ObjectName bindConflictExecutorObjectName;
+
     private ClientSessionListener clientSessionListener = new ClientSessionListener();
     private IncomingServerSessionListener incomingServerListener = new IncomingServerSessionListener();
     private OutgoingServerSessionListener outgoingServerListener = new OutgoingServerSessionListener();
@@ -267,7 +326,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
      * @param session The (detached) session to be terminated.
      */
     public synchronized void terminateDetached(LocalSession session) {
-        if (!(session instanceof LocalClientSession)) {
+        if (!(session instanceof LocalClientSession clientSession)) {
             Log.trace("Silently ignoring a request to terminate a non LocalClientSession: {}", session);
             return;
         }
@@ -276,12 +335,9 @@ public class SessionManager extends BasicModule implements ClusterEventListener
             Log.info("Unable to terminate detachment of session '{}' ({}), as it was not registered as being a detached.", session.getAddress(), session.getStreamID());
             return;
         }
-        final LocalClientSession clientSession = (LocalClientSession)session;
 
-        // OF-1923: Only close the session if it has not been replaced by another session (if the session
-        // has been replaced, then the condition below will compare to distinct instances). This *should* not
-        // occur (but has been observed, prior to the fix of OF-1923). This check is left in as a safeguard.
-        if (session == routingTable.getClientRoute(session.getAddress())) {
+        // OF-1923 / OF-3318: Only close the session if it has not been replaced by another session for the same full JID.
+        if (isRouteOwner(clientSession)) {
             try {
                 if ((clientSession.getPresence().isAvailable() || !clientSession.wasAvailable()) &&
                     routingTable.hasClientRoute(session.getAddress())) {
@@ -300,7 +356,9 @@ public class SessionManager extends BasicModule implements ClusterEventListener
                 removeSession(clientSession);
             }
         } else {
+            // This could be the start of data state inconsistency. See OF-3044.
             Log.warn("Not removing detached session '{}' ({}) that appears to have been replaced by another session.", session.getAddress(), session.getStreamID());
+            // TODO investigate if the session should be removed (see OF-3320).
         }
     }
 
@@ -755,7 +813,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         Presence presence;
         // Get list of sessions of the same user
         JID searchJID = new JID(session.getAddress().getNode(), session.getAddress().getDomain(), null);
-        List<JID> addresses = routingTable.getRoutes(searchJID, null);
+        List<JID> addresses = routingTable.getRoutes(searchJID, searchJID);
         for (JID address : addresses) {
             if (address.equals(session.getAddress())) {
                 continue;
@@ -786,7 +844,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         }
         // Get list of sessions of the same user
         JID searchJID = new JID(originatingResource.getNode(), originatingResource.getDomain(), null);
-        List<JID> addresses = routingTable.getRoutes(searchJID, null);
+        List<JID> addresses = routingTable.getRoutes(searchJID, searchJID);
         for (JID address : addresses) {
             if (!originatingResource.equals(address)) {
                 // Send the presence of the session whose presence has changed to
@@ -805,7 +863,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
      * @param session the session that received an unavailable presence.
      */
     public void sessionUnavailable(LocalClientSession session) {
-        if (routingTable != null && session.getAddress().toBareJID().trim().length() != 0) {
+        if (routingTable != null && !session.getAddress().toBareJID().trim().isEmpty()) {
             // Update route to unavailable session (anonymous or not)
             routingTable.addClientRoute(session.getAddress(), session); // Note that _adding_ the route is not a typo, as previously assumed. See OF-2210 and OF-2012.
         }
@@ -830,7 +888,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
 
         // Check presence's priority of other available resources
         JID searchJID = session.getAddress().asBareJID();
-        for (JID address : routingTable.getRoutes(searchJID, null)) {
+        for (JID address : routingTable.getRoutes(searchJID, searchJID)) {
             if (address.equals(session.getAddress())) {
                 continue;
             }
@@ -850,14 +908,17 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         }
     }
 
-    public boolean isAnonymousRoute(String username) {
+    public boolean isAnonymousClientSession(@Nonnull final String username) {
         // JID's node and resource are the same for anonymous sessions
-        return isAnonymousRoute(new JID(username, serverName, username, true));
+        final JID address = new JID(username, serverName, username, true);
+        return isAnonymousClientSession(address);
     }
 
-    public boolean isAnonymousRoute(JID address) {
-        // JID's node and resource are the same for anonymous sessions
-        return routingTable.isAnonymousRoute(address);
+    public boolean isAnonymousClientSession(@Nonnull final JID address) {
+        // JID's node and resource are the same for anonymous sessions. When provided with a bare JID, 'auto-complete' it.
+        final JID correctedJid = address.getResource() != null ? address : new JID(address.getNode(), address.getDomain(), address.getNode(), true);
+        final ClientSession session = getSession(correctedJid);
+        return session != null && session.isAnonymousUser();
     }
 
     public boolean isActiveRoute(String username, String resource) {
@@ -902,6 +963,42 @@ public class SessionManager extends BasicModule implements ClusterEventListener
     }
 
     /**
+     * Returns all sessions responsible for this JID. The returned Sessions may have never sent
+     * an available presence (thus not have a route) or could be a Session that hasn't
+     * authenticated yet (i.e. preAuthenticatedSessions).
+     *
+     * If the provided JID is a full JID, this method behaves exactly like {@link #getSession(JID)},
+     * but returns the singular result (if any) in a collection of one element. If that method returned null,
+     * this method returns an empty collection.
+     *
+     * @param from the sender of the packet.
+     * @return the <code>Session</code> associated with the JID.
+     * @see #getSessions(String) returns only 'available' sessions for a user.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3132">OF-3132: When obtaining user sessions for bare JID, not all sessions are returned</a>
+     */
+    public Collection<ClientSession> getSessions(JID from) {
+        // Return null if the JID is null or belongs to a foreign server. If the server is
+        // shutting down then serverName will be null so answer null too in this case.
+        if (from == null || serverName == null || !serverName.equals(from.getDomain())) {
+            return Collections.emptyList();
+        }
+
+        if (from.getResource() != null) {
+            final ClientSession fullJidResult = getSession(from);
+            return fullJidResult == null ? Collections.emptyList() : List.of(fullJidResult);
+        }
+
+        if (from.getNode() == null) {
+            return Collections.emptyList();
+        }
+
+        return routingTable.getClientsRoutes(false).stream()
+            .filter(clientSession -> from.getNode().equals(clientSession.getAddress().getNode())
+                && serverName.equals(clientSession.getAddress().getDomain()))
+            .toList();
+    }
+
+    /**
      * Returns a list that contains all authenticated client sessions connected to the server.
      * The list contains sessions of anonymous and non-anonymous users.
      *
@@ -928,7 +1025,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
             }
 
             // Sort list.
-            Collections.sort(filteredResults, filter.getSortComparator());
+            filteredResults.sort(filter.getSortComparator());
 
             int maxResults = filter.getNumResults();
             if (maxResults == SessionResultFilter.NO_RESULT_LIMIT) {
@@ -1029,6 +1126,15 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         return sessions;
     }
 
+    /**
+     * Return all user sessions that match the definition of RoutingTable#getRoutes (notably, the sessions are
+     * 'available' / have sent initial presence).
+     *
+     * @param username The user for which to return sessions
+     * @return sessions for the user
+     * @see #getSessions(JID) can return all sessions of a user (including those that are not 'available').
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3132">OF-3132: When obtaining user sessions for bare JID, not all sessions are returned</a>
+     */
     public Collection<ClientSession> getSessions(String username) {
         List<ClientSession> sessionList = new ArrayList<>();
         if (username != null && serverName != null) {
@@ -1113,8 +1219,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
     }
 
     public int getSessionCount(String username) {
-        // TODO Count ALL sessions not only available
-        return routingTable.getRoutes(new JID(username, serverName, null, true), null).size();
+        return getSessions(new JID(username, serverName, null, true)).size();
     }
 
     /**
@@ -1188,6 +1293,19 @@ public class SessionManager extends BasicModule implements ClusterEventListener
     public Collection<String> getOutgoingServers() {
         return routingTable.getServerHostnames();
     }
+
+    /**
+     * Returns remote domains for which the latest outgoing server-to-server connection establishment
+     * attempt failed.
+     *
+     * Entries are cleared when a subsequent outgoing attempt to the same remote domain succeeds.
+     *
+     * @return a collection of remote server domains.
+     */
+    public Collection<String> getFailedServers() {
+        return OutgoingSessionPromise.getInstance().getFailedServers();
+    }
+
     public Collection<DomainPair> getOutgoingDomainPairs() {
         return routingTable.getServerRoutes();
     }
@@ -1212,11 +1330,30 @@ public class SessionManager extends BasicModule implements ClusterEventListener
      * @throws PacketException if a packet exception occurs.
      */
     public void userBroadcast(String username, Packet packet) throws PacketException {
-        // TODO broadcast to ALL sessions of the user and not only available
-        for (JID address : routingTable.getRoutes(new JID(username, serverName, null), null)) {
-            packet.setTo(address);
-            routingTable.routePacket(address, packet);
+        for (final ClientSession session : getSessions(new JID(username, serverName, null))) {
+            packet.setTo(session.getAddress());
+            session.process(packet);
         }
+    }
+
+    /**
+     * Determines whether the supplied session currently owns the client route for its own address.
+     *
+     * @param session the session being evaluated (may be null).
+     * @return true if the session currently owns the route for its own address.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3318">OF-3318: SessionManager teardown ownership</a>
+     */
+    private boolean isRouteOwner(final ClientSession session)
+    {
+        if (session == null) {
+            return false;
+        }
+        final ClientSession current = routingTable.getClientRoute(session.getAddress());
+
+        // Ownership is verified by comparing StreamID, replacing an earlier implementation that depended on object
+        // identity. Object identity would in fact be correct (as paths that use it are local-first even in a cluster,
+        // so it returns the very same local instance). The StreamID comparison is defensive hardening.
+        return current != null && Objects.equals(session.getStreamID(), current.getStreamID());
     }
 
     /**
@@ -1258,25 +1395,39 @@ public class SessionManager extends BasicModule implements ClusterEventListener
             session = getSession(fullJID);
         }
 
-        // Remove route to the removed session (anonymous or not)
-        boolean removed = routingTable.removeClientRoute(fullJID);
+        // OF-3318: Only the session that currently OWNS the route may remove it, emit the server-side unavailable, or
+        // clear the session-info cache (two LocalClientSession instances can briefly exist for the same full JID - for
+        // example after a reconnect. Only one owns the route). A stale teardown must not tear down the live session's
+        // route or mark it offline.
+        // Ownership is captured before removal (the route still exists at this point). Bookkeeping (session_destroyed
+        // dispatch) is still performed for stale sessions below, so they are not leaked.
+        final ClientSession current = (session == null) ? null : routingTable.getClientRoute(fullJID);
+        final boolean ownsRoute = current != null && Objects.equals(session.getStreamID(), current.getStreamID());
+        final boolean replacedByOther = current != null && !ownsRoute; // a route exists, owned by a different session
+
+        // Remove route to the removed session (anonymous or not), but only when this session owns it.
+        boolean removed = ownsRoute && routingTable.removeClientRoute(fullJID);
 
         if (removed) {
             // Fire session event.
-            if (anonymous) {
-                SessionEventDispatcher
-                        .dispatchEvent(session, SessionEventDispatcher.EventType.anonymous_session_destroyed);
-            }
-            else {
-                SessionEventDispatcher.dispatchEvent(session, SessionEventDispatcher.EventType.session_destroyed);
-
-            }
+            SessionEventDispatcher.dispatchEvent(session,
+                anonymous ? SessionEventDispatcher.EventType.anonymous_session_destroyed : SessionEventDispatcher.EventType.session_destroyed
+            );
+        } else if (replacedByOther) {
+            // OF-3318: a route for this address exists but is owned by a different session (StreamID mismatch):
+            // this instance was replaced. Notify listeners so it is not leaked, without firing for null or
+            // pre-auth sessions (which never had a route / never fired session_created).
+            SessionEventDispatcher.dispatchEvent(session,
+                anonymous ? SessionEventDispatcher.EventType.anonymous_session_destroyed : SessionEventDispatcher.EventType.session_destroyed
+            );
         }
 
         // Remove the session from the pre-Authenticated sessions list (if present)
         boolean preauth_removed = session instanceof LocalClientSession && localSessionManager.removePreAuthenticatedSession((LocalClientSession) session);
-        // If the user is still available then send an unavailable presence
-        if (forceUnavailable || session.getPresence().isAvailable()) {
+
+        // If the user was still 'available' then send an unavailable presence, however (OF-3318) suppressed this for a
+        // session that does not own the route, as routing it would mark the live session (the route owner) offline.
+        if (forceUnavailable || (ownsRoute && session.getPresence().isAvailable())) {
             Presence offline = new Presence();
             offline.setFrom(fullJID);
             offline.setTo(new JID(null, serverName, null, true));
@@ -1286,7 +1437,9 @@ public class SessionManager extends BasicModule implements ClusterEventListener
 
         // Stop tracking information about the session and share it with other cluster nodes.
         // Note that, unlike other caches, this cache is populated only when clustering is enabled.
-        sessionInfoCache.remove(fullJID.toString());
+        if (ownsRoute) { // OF-3318: only clear when this session owns the route, otherwise the live session's cached info is evicted.
+            sessionInfoCache.remove(fullJID.toString());
+        }
 
         if (removed || preauth_removed) {
             // Decrement the counter of user sessions
@@ -1298,6 +1451,141 @@ public class SessionManager extends BasicModule implements ClusterEventListener
 
     public int getConflictKickLimit() {
         return conflictLimit;
+    }
+
+    /**
+     * Resolves any resource-binding conflict for the requested full JID and, if the conflict policy permits, binds the
+     * resource to the (already authenticated) session - enforcing the single-session-per-full-JID invariant cluster-wide.
+     *
+     * Runs off the calling (packet-worker) thread on a dedicated bounded executor, because conflict resolution may
+     * block on a synchronous cluster call when the conflicting session is remote (OF-3155/OF-3319). The caller is freed
+     * immediately and completes the bind from the returned future.
+     *
+     * @param session   the authenticated session being bound (not null).
+     * @param authToken the session's auth token (not null, not anonymous - anonymous sessions need no
+     *                  conflict resolution; see {@link LocalClientSession#setAnonymousAuth()}).
+     * @param resource  the already-resourceprep'd resource (not null).
+     * @return a future completing with {@link BindResult#BOUND} or {@link BindResult#CONFLICT}; only
+     *         unexpected errors complete it exceptionally.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3319">OF-3319</a>
+     */
+    public CompletableFuture<BindResult> bindResource(@Nonnull final LocalClientSession session,
+                                                      @Nonnull final AuthToken authToken,
+                                                      @Nonnull final String resource)
+    {
+        final String username = authToken.getUsername().toLowerCase();
+        final JID desiredJid = new JID(username, serverName, resource, true);
+
+        try {
+            return submitBindTask(() -> resolveConflictAndBind(session, authToken, resource, desiredJid));
+        } catch (final RejectedExecutionException e) {
+            // OF-3319: the dedicated bind-conflict pool is saturated. Fail CLOSED: refuse this bind rather than admit a
+            // potentially-duplicate session or block a packet worker.
+            Log.warn("Unable to schedule resource-binding conflict resolution for '{}' (bind-conflict executor saturated). Rejecting bind to preserve single-session-per-JID and protect packet processing.", desiredJid);
+            return CompletableFuture.completedFuture(BindResult.CONFLICT);
+        }
+    }
+
+    /**
+     * Submits the bind-conflict resolution task to the dedicated executor. Extracted as a seam so tests can simulate
+     * executor saturation by overriding this to throw {@link RejectedExecutionException}; production code must not
+     * override it.
+     *
+     * @param task the conflict-resolution-and-install work to run off the calling thread.
+     * @return a future completing with the task's result.
+     * @throws RejectedExecutionException if the executor cannot accept the task (caller translates this to a fail-closed reject).
+     */
+    protected CompletableFuture<BindResult> submitBindTask(@Nonnull final Supplier<BindResult> task)
+    {
+        return CompletableFuture.supplyAsync(task, bindConflictExecutor);
+    }
+
+    /**
+     * Performs the locked conflict-resolution-and-install for {@link #bindResource}. Runs on
+     * {@code bindConflictExecutor}. See {@link #bindResource} for the full contract.
+     */
+    @VisibleForTesting
+    BindResult resolveConflictAndBind(@Nonnull final LocalClientSession session,
+                                              @Nonnull final AuthToken authToken,
+                                              @Nonnull final String resource,
+                                              @Nonnull final JID desiredJid)
+    {
+        // Lock-free, off-worker: clear a closed/detached prior session cluster-wide BEFORE taking the lock.
+        // removeDetached re-enters terminateDetached -> the bare-JID lock on another thread, so it must not run while we hold that lock.
+        final ClientSession pre = routingTable.getClientRoute(desiredJid);
+        if (pre != null && pre.isClosed()) {
+            CacheFactory.doSynchronousClusterTask(new ClientSessionTask(desiredJid, RemoteSessionTask.Operation.removeDetached), true);
+        }
+
+        final Lock lock = routingTable.getClientRouteLock(desiredJid);
+        final Duration timeout = BIND_CONFLICT_SERVICE_LOCK_TIMEOUT.getValue();
+
+        final boolean acquired;
+        try {
+            acquired = lock.tryLock(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+            // The clustered lock implementation reports an interrupt as 'not acquired' and swallows the InterruptedException;
+            // restore the flag so shutdown/cancellation remains observable, and fail closed.
+            Thread.currentThread().interrupt();
+            Log.warn("Interrupted while acquiring bind-conflict lock for '{}'. Rejecting bind.", desiredJid);
+            return BindResult.CONFLICT;
+        }
+
+        if (!acquired) {
+            Log.warn("Could not acquire bind-conflict lock for '{}' within {}. Rejecting bind to preserve single-session-per-JID.", desiredJid, timeout);
+            return BindResult.CONFLICT;
+        }
+
+        try
+        {
+            // Re-obtain ClientRoute, now under the lock: The closed session may have just been cleared; a live session
+            // may have raced in. Decide based on what the route is NOW, not what it was before the lock.
+            final ClientSession oldSession = routingTable.getClientRoute(desiredJid);
+            if (oldSession != null && !oldSession.isClosed()) {
+                // removeDetached for a closed prior session is handled lock-free above, before this lock was acquired:
+                // that task re-enters this same bare-JID lock on another thread and would deadlock if run here. So only
+                // a live conflict remains to resolve.
+                final int conflictLimit = getConflictKickLimit();
+
+                if (conflictLimit == NEVER_KICK) {
+                    Log.debug("Conflict resolution for '{}' is 'NEVER KICK'. Rejecting bind with 'conflict'.", desiredJid);
+                    return BindResult.CONFLICT;
+                }
+
+                final int conflictCount = oldSession.incrementConflictCount();
+                if (conflictCount <= conflictLimit) {
+                    Log.debug("Conflict resolution for '{}' does not (yet) permit kicking the existing session. Conflict count: {}, limit: {}. Rejecting bind with 'conflict'.", desiredJid, conflictCount, conflictLimit);
+                    return BindResult.CONFLICT;
+                }
+
+                // Kick the prior owner. close() may be a bounded synchronous cluster RPC when the old session is remote;
+                // it runs here (off-worker) and inside the lock. The old session's route removal happens asynchronously
+                // on its hosting node, but that is fine: we install the new route below under the same lock, and route
+                // installation is last-write-wins, so our install is authoritative. OF-3318 ensures the (later) teardown
+                // of the displaced session will not remove our freshly installed route.
+                Log.debug("Kicking existing session for '{}' (conflict count {} exceeds limit {}).", desiredJid, conflictCount, conflictLimit);
+                oldSession.close(new StreamError(StreamError.Condition.conflict));
+
+                // OF-1923: a kicked session must never be resumed.
+                if (oldSession instanceof LocalClientSession) {
+                    removeDetached((LocalClientSession) oldSession);
+                }
+            }
+            // else: oldSession == null (cleared, or never existed) or isClosed (will be gone): safe to install the new session's route..
+
+            // Install the new session's route.
+            session.setAuthToken(authToken, resource);
+            return BindResult.BOUND;
+        }
+        catch (final RuntimeException e)
+        {
+            Log.error("Unexpected error while resolving bind conflict for '{}'. Rejecting bind.", desiredJid, e);
+            return BindResult.CONFLICT;
+        }
+        finally
+        {
+            lock.unlock();
+        }
     }
 
     /**
@@ -1330,105 +1618,181 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         return session.getLanguage();
     }
 
-    private class ClientSessionListener implements ConnectionCloseListener {
+    /**
+     * Outcome of an attempt to bind a resource to a session.
+     *
+     * @see #bindResource(LocalClientSession, AuthToken, String)
+     */
+    public enum BindResult
+    {
         /**
-         * Handle a session that just closed.
+         * The resource was bound; the session now owns the route for its full JID.
+         */
+        BOUND,
+
+        /**
+         * The bind was rejected because a conflicting session for the same full JID could not be displaced under the
+         * configured policy, or could not be displaced in time / the server was too busy to do so safely. The caller
+         * must return a {@code conflict} stream/stanza error and MUST NOT treat the session as bound.
+         */
+        CONFLICT
+    }
+
+    private class ClientSessionListener implements ConnectionCloseListener
+    {
+        /**
+         * Handle a client session that just closed.
          *
          * @param handback The session that just closed
+         * @return a Future representing pending completion of the event listener invocation.
          */
         @Override
-        public void onConnectionClose(Object handback) {
-            try {
-                LocalClientSession session = (LocalClientSession) handback;
-                if (session.isDetached()) {
-                    Log.debug("Closing session with address {} and streamID {} is detached already.", session.getAddress(), session.getStreamID());
-                    return;
-                }
-                if (session.getStreamManager().getResume()) {
-                    Log.debug("Closing session with address {} and streamID {} has SM enabled; detaching.", session.getAddress(), session.getStreamID());
-                    session.setDetached();
-                    return;
-                } else {
-                    Log.debug("Closing session with address {} and streamID {} does not have SM enabled.", session.getAddress(), session.getStreamID());
-                }
-                try {
-                    if ((session.getPresence().isAvailable() || !session.wasAvailable()) &&
-                            routingTable.hasClientRoute(session.getAddress())) {
-                        // Send an unavailable presence to the user's subscribers
-                        // Note: This gives us a chance to send an unavailable presence to the
-                        // entities that the user sent directed presences
-                        Presence presence = new Presence();
-                        presence.setType(Presence.Type.unavailable);
-                        presence.setFrom(session.getAddress());
-                        router.route(presence);
-                    }
+        public CompletableFuture<Void> onConnectionClosing(Object handback)
+        {
+            final LocalClientSession session = (LocalClientSession) handback;
+            if (session.isDetached()) {
+                Log.debug("Closing client session with address {} and streamID {} is detached already; this is a no-op.", session.getAddress(), session.getStreamID());
+                return CompletableFuture.completedFuture(null);
+            }
+            if (session.getStreamManager().getResume()) {
+                Log.debug("Closing client session with address {} and streamID {} has SM enabled; detaching.", session.getAddress(), session.getStreamID());
+                session.setDetached();
+                return CompletableFuture.completedFuture(null);
+            }
 
-                    session.getStreamManager().onClose(router, serverAddress);
+            CompletableFuture<Void> result = CompletableFuture.runAsync(() -> Log.debug("Closing client session with address {} and streamID {} that does not have SM resume.", session.getAddress(), session.getStreamID()));
+
+            // OF-3318: Only emit unavailable when this closing session still owns the route (two LocalClientSession instances
+            // can briefly exist for the same full JID - for example after a reconnect. Only one owns the route). Verifying
+            // ownership (as terminateDetached() does for OF-1923) prevents sending unavailable presence for a live session
+            // when a stale session closes.
+            result = result.thenRunAsync(() -> {
+                if ((session.getPresence().isAvailable() || !session.wasAvailable()) && isRouteOwner(session)) {
+                    // Send an unavailable presence to the user's subscribers. This gives us a chance to send an
+                    // unavailable presence to the entities that the user sent directed presences
+                    final Presence presence = new Presence();
+                    presence.setType(Presence.Type.unavailable);
+                    presence.setFrom(session.getAddress());
+
+                    router.route(presence);
                 }
-                finally {
-                    // Remove the session
+            });
+
+            // In the completion stage remove the session (which means it'll be removed no matter if the previous stage had exceptions).
+            return result.whenComplete((v,t) -> {
+                try {
+                    session.getStreamManager().onClose(router, serverAddress);
+                } finally {
+                    // Note that the session can't be removed before the unavailable presence has been sent (as session-provided data is used by the broadcast).
                     removeSession(session);
                 }
-            }
-            catch (Exception e) {
-                // Can't do anything about this problem...
-                Log.error(LocaleUtils.getLocalizedString("admin.error.close"), e);
-            }
+            });
+        }
+
+        @Override
+        public int getPriority() {
+            // Openfire's built-in listeners should use a higher priority than listeners implemented by plugins / third parties.
+            return ConnectionCloseListener.PRIO_BUILT_IN;
         }
     }
 
-    private class IncomingServerSessionListener implements ConnectionCloseListener {
+    private class IncomingServerSessionListener implements ConnectionCloseListener
+    {
         /**
-         * Handle a session that just closed.
+         * Handle an incoming server-to-server session that just closed.
          *
          * @param handback The session that just closed
+         * @return a Future representing pending completion of the event listener invocation.
          */
         @Override
-        public void onConnectionClose(Object handback) {
-            LocalIncomingServerSession session = (LocalIncomingServerSession)handback;
+        public CompletableFuture<Void> onConnectionClosing(Object handback)
+        {
+            final LocalIncomingServerSession session = (LocalIncomingServerSession)handback;
+
+            CompletableFuture<Void> result = CompletableFuture.runAsync(() -> Log.debug("Closing incoming server session with address {} and streamID {}.", session.getAddress(), session.getStreamID()));
+
             // Remove all the domains that were registered for this server session.
+            final Collection<CompletableFuture<Void>> tasks = new ArrayList<>();
             for (String domain : session.getValidatedDomains()) {
-                unregisterIncomingServerSession(domain, session);
+                tasks.add(CompletableFuture.runAsync(() -> unregisterIncomingServerSession(domain, session)));
             }
+
+            return result.thenCompose(e -> CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])));
+        }
+
+        @Override
+        public int getPriority() {
+            // Openfire's built-in listeners should use a higher priority than listeners implemented by plugins / third parties.
+            return ConnectionCloseListener.PRIO_BUILT_IN;
         }
     }
 
-    private class OutgoingServerSessionListener implements ConnectionCloseListener {
+    private class OutgoingServerSessionListener implements ConnectionCloseListener
+    {
         /**
-         * Handle a session that just closed.
+         * Handle an outgoing server-to-server session that just closed.
          *
          * @param handback The session that just closed
+         * @return a Future representing pending completion of the event listener invocation.
          */
         @Override
-        public void onConnectionClose(Object handback) {
-            OutgoingServerSession session = (OutgoingServerSession)handback;
+        public CompletableFuture<Void> onConnectionClosing(Object handback)
+        {
+            final OutgoingServerSession session = (OutgoingServerSession)handback;
+
+            CompletableFuture<Void> result = CompletableFuture.runAsync(() -> Log.debug("Closing outgoing server session with address {} and streamID {}.", session.getAddress(), session.getStreamID()));
+
             // Remove all the domains that were registered for this server session.
+            final Collection<CompletableFuture<Void>> tasks = new ArrayList<>();
             for (DomainPair domainPair : session.getOutgoingDomainPairs()) {
-                // Remove the route to the session using the domain.
-                server.getRoutingTable().removeServerRoute(domainPair);
+                tasks.add(CompletableFuture.runAsync(() -> server.getRoutingTable().removeServerRoute(domainPair)));
             }
+
+            return result.thenCompose(e -> CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])));
+        }
+
+        @Override
+        public int getPriority() {
+            // Openfire's built-in listeners should use a higher priority than listeners implemented by plugins / third parties.
+            return ConnectionCloseListener.PRIO_BUILT_IN;
         }
     }
 
-    private class ConnectionMultiplexerSessionListener implements ConnectionCloseListener {
+    private class ConnectionMultiplexerSessionListener implements ConnectionCloseListener
+    {
         /**
-         * Handle a session that just closed.
+         * Handle a multiplexer session that just closed.
          *
          * @param handback The session that just closed
+         * @return a Future representing pending completion of the event listener invocation.
          */
         @Override
-        public void onConnectionClose(Object handback) {
-            ConnectionMultiplexerSession session = (ConnectionMultiplexerSession)handback;
+        public CompletableFuture<Void> onConnectionClosing(Object handback)
+        {
+            final ConnectionMultiplexerSession session = (ConnectionMultiplexerSession)handback;
+            final String domain = session.getAddress().getDomain();
+
+            CompletableFuture<Void> result = CompletableFuture.runAsync(() -> Log.debug("Closing multiplexer session with address {} and streamID {}.", session.getAddress(), session.getStreamID()));
+
             // Remove all the domains that were registered for this server session
-            String domain = session.getAddress().getDomain();
-            localSessionManager.getConnnectionManagerSessions().remove(session.getAddress().toString());
+            result = result.thenRunAsync(() -> localSessionManager.getConnnectionManagerSessions().remove(session.getAddress().toString()));
+
             // Remove track of the cluster node hosting the CM connection
-            multiplexerSessionsCache.remove(session.getAddress().toString());
+            result = result.thenRunAsync(() -> multiplexerSessionsCache.remove(session.getAddress().toString()));
+
             if (getConnectionMultiplexerSessions(domain).isEmpty()) {
                 // Terminate ClientSessions originated from this connection manager
                 // that are still active since the connection manager has gone down
-                ConnectionMultiplexerManager.getInstance().multiplexerUnavailable(domain);
+                result = result.thenRunAsync(() -> ConnectionMultiplexerManager.getInstance().multiplexerUnavailable(domain));
             }
+
+            return result;
+        }
+
+        @Override
+        public int getPriority() {
+            // Openfire's built-in listeners should use a higher priority than listeners implemented by plugins / third parties.
+            return ConnectionCloseListener.PRIO_BUILT_IN;
         }
     }
 
@@ -1446,6 +1810,25 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         }
         else {
             streamIDFactory = new BasicStreamIDFactory();
+        }
+
+        final int core = BIND_CONFLICT_SERVICE_CORE_POOL_SIZE.getValue();
+        int max = BIND_CONFLICT_SERVICE_MAX_POOL_SIZE.getValue();
+        if (max < core) {
+            Log.warn("xmpp.session.bind.conflict.maximum-pool-size ({}) is below core-pool-size ({}); raising maximum to match core to avoid an invalid thread pool configuration.", max, core);
+            max = core;
+        }
+
+        bindConflictExecutor = new ThreadPoolExecutor(
+            core,
+            max,
+            BIND_CONFLICT_SERVICE_KEEP_ALIVE_TIME.getValue().toMillis(), TimeUnit.MILLISECONDS,
+            new SynchronousQueue<>(),
+            new NamedThreadFactory("session-bind-conflict-", Executors.defaultThreadFactory(), true, Thread.NORM_PRIORITY));
+
+        if (JMXManager.isEnabled()) {
+            final ThreadPoolExecutorDelegateMBean mBean = new ThreadPoolExecutorDelegate(bindConflictExecutor);
+            bindConflictExecutorObjectName = JMXManager.tryRegister(mBean, ThreadPoolExecutorDelegateMBean.BASE_OBJECT_NAME + "session-bind-conflict");
         }
 
         // Initialize caches.
@@ -1488,15 +1871,16 @@ public class SessionManager extends BasicModule implements ClusterEventListener
             // No address, or no node: broadcast to all active user sessions on the server.
             broadcast(packet);
         }
-        else if (address.getResource() == null || address.getResource().length() < 1) {
+        else if (address.getResource() == null || address.getResource().isEmpty()) {
             // Node, but no resource: broadcast to all active sessions for the user.
             userBroadcast(address.getNode(), packet);
         }
         else {
             // Full JID: address to the session, if one exists.
-            for (JID sessionAddress : routingTable.getRoutes(address, null)) {
-                packet.setTo(sessionAddress); // expected to be equal to 'address'.
-                routingTable.routePacket(sessionAddress, packet);
+            final ClientSession session = routingTable.getClientRoute(address);
+            if (session != null){
+                packet.setTo(session.getAddress()); // expected to be equal to 'address'.
+                session.process(packet);
             }
         }
     }
@@ -1550,6 +1934,14 @@ public class SessionManager extends BasicModule implements ClusterEventListener
         {
             Log.warn( "An exception occurred while trying to remove locally connected external components from the clustered cache. Other cluster nodes might continue to see our external components, even though we this instance is stopping.", e );
         }
+
+        if (bindConflictExecutorObjectName != null) {
+            JMXManager.tryUnregister(bindConflictExecutorObjectName);
+            bindConflictExecutorObjectName = null;
+        }
+        if (bindConflictExecutor != null) {
+            bindConflictExecutor.shutdown();
+        }
     }
 
     /**
@@ -1580,12 +1972,12 @@ public class SessionManager extends BasicModule implements ClusterEventListener
      */
     public void setMultipleServerConnectionsAllowed(boolean allowed) {
         JiveGlobals.setProperty("xmpp.server.session.allowmultiple", Boolean.toString(allowed));
-        if (allowed && JiveGlobals.getIntProperty("xmpp.server.session.idle", 10 * 60 * 1000) <= 0)
+        if (allowed && (ConnectionSettings.Server.IDLE_TIMEOUT_PROPERTY.getValue().isNegative() || ConnectionSettings.Server.IDLE_TIMEOUT_PROPERTY.getValue().isZero()))
         {
             Log.warn("Allowing multiple S2S connections for each domain, without setting a " +
                     "maximum idle timeout for these connections, is unrecommended! Either " +
                     "set xmpp.server.session.allowmultiple to 'false' or change " +
-                    "xmpp.server.session.idle to a (large) positive value.");
+                    "{} to a (large) positive value.", ConnectionSettings.Server.IDLE_TIMEOUT_PROPERTY.getKey());
         }
     }
 
@@ -1619,19 +2011,19 @@ public class SessionManager extends BasicModule implements ClusterEventListener
             return;
         }
         // Set the new property value
-        JiveGlobals.setProperty("xmpp.server.session.idle", Integer.toString(idleTime));
+        ConnectionSettings.Server.IDLE_TIMEOUT_PROPERTY.setValue(Duration.ofMillis(idleTime));
 
         if (idleTime <= 0 && isMultipleServerConnectionsAllowed() )
         {
             Log.warn("Allowing multiple S2S connections for each domain, without setting a " +
                 "maximum idle timeout for these connections, is unrecommended! Either " +
                 "set xmpp.server.session.allowmultiple to 'false' or change " +
-                "xmpp.server.session.idle to a (large) positive value.");
+                "{} to a (large) positive value.", ConnectionSettings.Server.IDLE_TIMEOUT_PROPERTY.getKey());
         }
     }
 
     public int getServerSessionIdleTime() {
-        return JiveGlobals.getIntProperty("xmpp.server.session.idle", 10 * 60 * 1000);
+        return (int) ConnectionSettings.Server.IDLE_TIMEOUT_PROPERTY.getValue().toMillis();
     }
 
     public void setSessionDetachTime(int idleTime) {
@@ -1664,7 +2056,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
 
         // Register a cache entry event listener that will collect data for entries added by all other cluster nodes,
         // which is intended to be used (only) in the event of a cluster split.
-        final ClusteredCacheEntryListener<StreamID, IncomingServerSessionInfo> incomingServerSessionsCacheEntryListener = new ReverseLookupUpdatingCacheEntryListener<>(incomingServerSessionInfoByClusterNode);
+        final ClusteredCacheEntryListener<StreamID, IncomingServerSessionInfo> incomingServerSessionsCacheEntryListener = new ReverseLookupUpdatingCacheEntryListener<>(incomingServerSessionInfoByClusterNode, true);
 
         // Simulate 'entryAdded' for all data that already exists elsewhere in the cluster.
         incomingServerSessionInfoCache.entrySet().stream()
@@ -1674,7 +2066,7 @@ public class SessionManager extends BasicModule implements ClusterEventListener
 
         // Register a cache entry event listener that will collect data for entries added by all other cluster nodes,
         // which is intended to be used (only) in the event of a cluster split.
-        final ClusteredCacheEntryListener<String, ClientSessionInfo> sessionInfoKeysClusterNodeCacheEntryListener = new ReverseLookupUpdatingCacheEntryListener<>(sessionInfoKeysByClusterNode);
+        final ClusteredCacheEntryListener<String, ClientSessionInfo> sessionInfoKeysClusterNodeCacheEntryListener = new ReverseLookupUpdatingCacheEntryListener<>(sessionInfoKeysByClusterNode, true);
 
         // Simulate 'entryAdded' for all data that already exists elsewhere in the cluster.
         sessionInfoCache.entrySet().stream()
@@ -1920,24 +2312,33 @@ public class SessionManager extends BasicModule implements ClusterEventListener
      */
     private class DetachedCleanupTask extends TimerTask {
         /**
-         * Close detached client sessions that haven't seen activity in more than
-         * 30 minutes by default.
+         * Close detached client sessions that haven't seen activity.
          */
         @Override
         public void run() {
-            int idleTime = getSessionDetachTime();
+            final int idleTime = getSessionDetachTime();
             if (idleTime == -1) {
                 return;
             }
-            final long deadline = System.currentTimeMillis() - idleTime;
+            final Duration allowableInactivity = Duration.ofMillis(idleTime);
+            final Instant deadline = Instant.now().minus(allowableInactivity);
             for (LocalSession session : detachedSessions.values()) {
                 try {
-                    Log.trace("Iterating over detached session '{}' ({}) to determine if it needs to be cleaned up.", session.getAddress(), session.getStreamID());
-                    if (session.getLastActiveDate().getTime() < deadline) {
-                        Log.debug("Detached session '{}' ({}) has been detached for longer than {} and will be cleaned up.", session.getAddress(), session.getStreamID(), Duration.ofMillis(idleTime));
-                        terminateDetached(session);
+                    final Set<TerminationDelegate> delegates = session.getStreamManager().getTerminationDelegates();
+                    if (!delegates.isEmpty()) {
+                        if (delegates.stream().allMatch(terminationDelegate -> terminationDelegate.shouldTerminate(allowableInactivity))) {
+                            Log.debug("Detached session '{}' ({}) uses termination delegation, that does wants to have this session cleaned up. Terminating session now.", session.getAddress(), session.getStreamID());
+                            terminateDetached(session);
+                        } else {
+                            Log.trace("Detached session '{}' ({}) uses termination delegation, that does not want to have this session cleaned up yet.", session.getAddress(), session.getStreamID());
+                        }
                     } else {
-                        Log.trace("Detached session '{}' ({}) has been detached for {}, which is not longer than the configured maximum of {}. It will not (yet) be cleaned up.", session.getAddress(), session.getStreamID(), Duration.ofMillis(System.currentTimeMillis()-session.getLastActiveDate().getTime()), Duration.ofMillis(idleTime));
+                        if (session.getLastActiveDate().toInstant().isBefore(deadline)) {
+                            Log.debug("Detached session '{}' ({}) has been detached for longer than {} and will be cleaned up.", session.getAddress(), session.getStreamID(), Duration.ofMillis(idleTime));
+                            terminateDetached(session);
+                        } else {
+                            Log.trace("Detached session '{}' ({}) has been detached for {}, which is not longer than the configured maximum of {}. It will not (yet) be cleaned up.", session.getAddress(), session.getStreamID(), Duration.ofMillis(System.currentTimeMillis()-session.getLastActiveDate().getTime()), Duration.ofMillis(idleTime));
+                        }
                     }
                 }
                 catch (Throwable e) {

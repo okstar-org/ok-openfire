@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.jivesoftware.openfire.roster;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.jivesoftware.openfire.SharedGroupException;
 import org.jivesoftware.openfire.group.Group;
 import org.jivesoftware.openfire.group.GroupManager;
@@ -440,28 +441,54 @@ public class RosterItem implements Cacheable, Externalizable {
             }
 
             // Remove shared groups from the param
-            for (Iterator<String> it=groups.iterator(); it.hasNext();) {
-                String groupName = it.next();
-                try {
-                    Group group = GroupManager.getInstance().getGroup(groupName);
-                    if (RosterManager.isSharedGroup(group)) {
-                        it.remove();
-                    }
-                } catch (GroupNotFoundException e) {
-                    // Check now if there is a group whose display name matches the requested group
-                    Collection<Group> groupsWithProp = GroupManager
-                            .getInstance()
-                            .search(Group.SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, groupName);
-                    Iterator<Group> itr = groupsWithProp.iterator();
-                    while(itr.hasNext()) {
-                        Group group = itr.next();
-                        if (RosterManager.isSharedGroup(group)) {
-                            it.remove();
-                        }
-                    }
+            removeSharedGroups(groups);
+
+            this.groups = groups;
+        }
+    }
+
+    /**
+     * Removes any group names from the provided collection that represent
+     * shared groups, either directly by group name or through a matching
+     * shared-roster display name.
+     *
+     * @param groupNames a modifiable collection of group names
+     */
+    @VisibleForTesting
+    static void removeSharedGroups(Collection<String> groupNames)
+    {
+        final Iterator<String> it = groupNames.iterator();
+        while (it.hasNext())
+        {
+            final String groupName = it.next();
+
+            try {
+                // Attempt to load the group by its name
+                final Group group = GroupManager.getInstance().getGroup(groupName);
+                if (group.isShared()) {
+                    it.remove();
                 }
             }
-            this.groups = groups;
+            catch (GroupNotFoundException e)
+            {
+                // Fallback: check for groups whose display name matches the provided name
+                final Collection<Group> groupsWithProp = GroupManager
+                    .getInstance()
+                    .search(Group.SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, groupName);
+
+                boolean isShared = false;
+
+                for (final Group group : groupsWithProp) {
+                    if (group.isShared()) {
+                        isShared = true;
+                        break; // Prevent multiple remove() attempts (OF-3149)
+                    }
+                }
+
+                if (isShared) {
+                    it.remove();
+                }
+            }
         }
     }
 
@@ -553,7 +580,7 @@ public class RosterItem implements Cacheable, Externalizable {
     }
 
     /**
-     * Returns true if this item belongs ONLY to shared groups. This means that the the item is
+     * Returns true if this item belongs ONLY to shared groups. This means that the item is
      * considered to be "only shared" if it doesn't belong to a personal group but only to shared
      * groups.
      *
@@ -680,5 +707,14 @@ public class RosterItem implements Cacheable, Externalizable {
 
     public void setStoredSubscribeStanza(Presence subscribeStanza) {
         this.subscribeStanza = subscribeStanza;
+    }
+
+    /**
+     * Generates a hash code based on only those fields that are relevant for Roster Versioning (as defined in RFC 6121 section 2.6).
+     *
+     * @return A hash code
+     */
+    public int rosterVerHashCode() {
+        return Objects.hash(recvStatus, jid, nickname, groups, sharedGroups, invisibleSharedGroups, subStatus, askStatus, rosterID);
     }
 }

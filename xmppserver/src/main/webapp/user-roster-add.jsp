@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2005-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@
 <%@ page import="org.jivesoftware.openfire.user.UserAlreadyExistsException" %>
 <%@ page import="org.jivesoftware.openfire.SharedGroupException" %>
 <%@ page import="org.slf4j.LoggerFactory" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -49,7 +50,7 @@
     Map<String, String> errors = new HashMap<>();
     // Handle a cancel
     if (cancel) {
-        response.sendRedirect("user-roster.jsp?username=" + URLEncoder.encode(username, "UTF-8"));
+        response.sendRedirect("user-roster.jsp?username=" + URLEncoder.encode(username, StandardCharsets.UTF_8));
         return;
     }
     Cookie csrfCookie = CookieUtils.getCookie(request, "csrf");
@@ -68,7 +69,7 @@
     // Handle a request to create a user:
     if (add) {
         // do an add if there were no errors
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             try {
                 // Load the user's roster object
                 Roster roster = webManager.getRosterManager().getRoster(username);
@@ -88,9 +89,9 @@
 
                 // Successful, so redirect
                 if (another) {
-                    response.sendRedirect("user-roster-add.jsp?success=true&username=" + URLEncoder.encode(username, "UTF-8"));
+                    response.sendRedirect("user-roster-add.jsp?success=true&username=" + URLEncoder.encode(username, StandardCharsets.UTF_8));
                 } else {
-                    response.sendRedirect("user-roster.jsp?username=" + URLEncoder.encode(username, "UTF-8") + "&addsuccess=true");
+                    response.sendRedirect("user-roster.jsp?username=" + URLEncoder.encode(username, StandardCharsets.UTF_8) + "&addsuccess=true");
                 }
                 return;
             }
@@ -117,7 +118,7 @@
     <head>
         <title><fmt:message key="user.roster.add.title"/></title>
         <meta name="subPageID" content="user-roster"/>
-        <meta name="extraParams" content="<%= "username="+URLEncoder.encode(username, "UTF-8") %>"/>
+        <meta name="extraParams" content="<%= "username="+URLEncoder.encode(username, StandardCharsets.UTF_8) %>"/>
     </head>
     <body>
 
@@ -171,15 +172,15 @@
         <tr>
             <td style="width: 1%; white-space: nowrap"><label for="jidtf"><fmt:message key="user.roster.jid" />:</label> *</td>
             <td>
-                <input type="text" name="jid" size="30" maxlength="255" value="<%= ((jid!=null) ? StringUtils.escapeForXML(jid) : "") %>"
-                 id="jidtf">
+                <input type="text" name="jid" size="30" maxlength="255" value="<%= StringUtils.escapeForXML(jid) %>"
+                 id="jidtf" autofocus>
             </td>
         </tr>
         <tr>
             <td style="width: 1%; white-space: nowrap">
                 <label for="nicknametf"><fmt:message key="user.roster.nickname" />:</label></td>
             <td>
-                <input type="text" name="nickname" size="30" maxlength="255" value="<%= ((nickname!=null) ? StringUtils.escapeForXML(nickname) : "") %>"
+                <input type="text" name="nickname" size="30" maxlength="255" value="<%= StringUtils.escapeForXML(nickname) %>"
                  id="nicknametf">
             </td>
         </tr>
@@ -187,7 +188,7 @@
             <td style="width: 1%; white-space: nowrap">
                 <label for="groupstf"><fmt:message key="user.roster.groups" />:</label></td>
             <td>
-                <input type="text" name="groups" size="30" maxlength="255" value="<%= ((groups!=null) ? StringUtils.escapeForXML(groups) : "") %>"
+                <input type="text" name="groups" size="30" maxlength="255" value="<%= StringUtils.escapeForXML(groups) %>"
                  id="groupstf">
             </td>
         </tr>
@@ -208,10 +209,6 @@
     </span>
 
 </form>
-
-    <script>
-    document.f.jid.focus();
-    </script>
 
     </body>
 </html>

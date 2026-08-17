@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package org.jivesoftware.openfire.session;
 
+import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.SystemProperty;
 
 import java.time.Duration;
@@ -107,12 +108,61 @@ public final class ConnectionSettings {
         public static final String DIALBACK_ENABLED = "xmpp.server.dialback.enabled";
         public static final String TLS_POLICY = "xmpp.server.tls.policy";
 
+        /**
+         * @deprecated Use {@link org.jivesoftware.openfire.spi.ConnectionListener#acceptSelfSignedCertificates()} and {@link org.jivesoftware.openfire.spi.ConnectionListener#setAcceptSelfSignedCertificates(boolean)} instead.
+         */
+        @Deprecated(forRemoval = true, since = "5.1.0")
         public static final String TLS_ACCEPT_SELFSIGNED_CERTS = "xmpp.server.certificate.accept-selfsigned";
+
+        /**
+         * @deprecated Redundant - setting this property does not seem to have a meaningful effect.
+         */
+        @Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0
         public static final String TLS_CERTIFICATE_VERIFY = "xmpp.server.certificate.verify";
+
+        /**
+         * @deprecated Use {@link org.jivesoftware.openfire.spi.ConnectionListener#verifyCertificateValidity()} and {@link org.jivesoftware.openfire.spi.ConnectionListener#setVerifyCertificateValidity(boolean)} instead.
+         */
+        @Deprecated(forRemoval = true, since = "5.1.0")
         public static final String TLS_CERTIFICATE_VERIFY_VALIDITY = "xmpp.server.certificate.verify.validity";
+
+        /**
+         * @deprecated This property is unused.
+         */
+        @Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0
         public static final String TLS_CERTIFICATE_ROOT_VERIFY = "xmpp.server.certificate.verify.root";
+
+        /**
+         * @deprecated Redundant - setting this property does not seem to have a meaningful effect.
+         */
+        @Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0
         public static final String TLS_CERTIFICATE_CHAIN_VERIFY = "xmpp.server.certificate.verify.chain";
+
         public static final String TLS_ON_PLAIN_DETECTION_ALLOW_NONDIRECTTLS_FALLBACK = "xmpp.server.tls.on-plain-detection-allow-nondirecttls-fallback";
+
+        /**
+         * Only verify revocation status of end-entity (leaf) certificates.
+         *
+         * This avoids issues with chains where CRL information isn't accessible
+         * for intermediate certificates.
+         */
+        public static final SystemProperty<Boolean> REVOCATION_CHECK_ONLY_END_ENTITY = SystemProperty.Builder.ofType(Boolean.class)
+            .setKey("xmpp.socket.ssl.certificate.revocation.only-end-entity")
+            .setDefaultValue(false)
+            .setDynamic(true)
+            .build();
+
+        /**
+         * Allow validation to continue if revocation information is unavailable.
+         *
+         * This prevents failures when OCSP/CRL servers are unreachable or when revocation
+         * information isn't available for some certificates.
+         */
+        public static final SystemProperty<Boolean> REVOCATION_SOFT_FAIL = SystemProperty.Builder.ofType(Boolean.class)
+            .setKey("xmpp.socket.ssl.certificate.revocation.soft-fail")
+            .setDefaultValue(false)
+            .setDynamic(true)
+            .build();
 
         public static final String COMPRESSION_SETTINGS = "xmpp.server.compression.policy";
 
@@ -125,8 +175,8 @@ public final class ConnectionSettings {
          * and closed.
          */
         public static final SystemProperty<Duration> IDLE_TIMEOUT_PROPERTY = SystemProperty.Builder.ofType(Duration.class)
-            .setKey("xmpp.server.idle")
-            .setDefaultValue(Duration.ofMinutes(30))
+            .setKey("xmpp.server.session.idle")
+            .setDefaultValue(Duration.ofMillis(JiveGlobals.getIntProperty("xmpp.server.idle", (int) Duration.ofMinutes(30).toMillis()))) // OF-3089: Use a fallback to a property name that was used by mistake in some versions of Openfire
             .setMinValue(Duration.ofMillis(-1))
             .setChronoUnit(ChronoUnit.MILLIS)
             .setDynamic(Boolean.TRUE)

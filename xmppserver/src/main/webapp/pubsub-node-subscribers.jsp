@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2017-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@
                  java.util.Map"
     errorPage="error.jsp"
 %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c"%>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
@@ -40,7 +41,6 @@
 
 <%  // Get parameters
     String nodeID = ParamUtils.getParameter(request,"nodeID");
-    String deleteID = ParamUtils.getParameter(request,"deleteID");
     String ownerString = ParamUtils.getParameter( request, "owner" );
     if ( ownerString == null )
     {
@@ -65,13 +65,6 @@
     Cookie csrfCookie = CookieUtils.getCookie(request, "csrf");
     String csrfParam = ParamUtils.getParameter(request, "csrf");
 
-    if (deleteID != null) {
-        if (csrfCookie == null || csrfParam == null || !csrfCookie.getValue().equals(csrfParam)) {
-            deleteID = null;
-            errors.put("csrf", "CSRF Failure!");
-        }
-    }
-
     // Load the node object
     PubSubServiceInfo pubSubServiceInfo;
     if ( owner == null )
@@ -86,26 +79,11 @@
     Node node = pubSubServiceInfo.getNode( nodeID );
     if (node == null) {
         // The requested node does not exist so return to the list of the existing node
-        response.sendRedirect("pubsub-node-summary.jsp" + (owner != null ? "?owner=" + URLEncoder.encode(owner.toBareJID(), "UTF-8") : ""));
+        response.sendRedirect("pubsub-node-summary.jsp" + (owner != null ? "?owner=" + URLEncoder.encode(owner.toBareJID(), StandardCharsets.UTF_8) : ""));
         return;
     }
 
-    // Delete specified subscription ID
-    if (errors.isEmpty() && deleteID != null) {
-        NodeSubscription subscription = node.getSubscription(deleteID);
-        if (subscription != null) {
-
-            node.cancelSubscription(subscription);
-            // Log the event
-            webManager.logEvent("Cancelled subscription ID: " + deleteID +  ", from node ID: " + nodeID, "Owner: " + subscription.getOwner().toBareJID());
-            // Done, so redirect
-            response.sendRedirect("pubsub-node-subscribers.jsp?nodeID=" + URLEncoder.encode(nodeID, "UTF-8")
-                + "&deleteSuccess=true"
-                + (owner != null ? "&owner=" + URLEncoder.encode(owner.toBareJID(), "UTF-8") : "")
-                + "&ownerOfDeleted=" + URLEncoder.encode(subscription.getOwner().toBareJID(), "UTF-8"));
-            return;
-        }
-    }
+    // No deletion logic here; handled by pubsub-node-subscriber-delete.jsp
 
     csrfParam = StringUtils.randomString(15);
     CookieUtils.setCookie(request, response, "csrf", csrfParam, -1);
@@ -234,10 +212,9 @@
             <fmt:formatDate type="both" dateStyle="medium" timeStyle="short" value="${subscription.expire}" />
             </td>
             <td style="width: 1%; text-align: center; border-right:1px #ccc solid;">
-                <c:url value="pubsub-node-subscribers.jsp" var="url">
+                <c:url value="pubsub-node-subscriber-delete.jsp" var="url">
                     <c:param name="nodeID" value="${node.nodeID}" />
                     <c:param name="deleteID" value="${subscription.ID}" />
-                    <c:param name="csrf" value="${csrf}" />
                     <c:param name="owner" value="${owner}"/>
                 </c:url>
                 <a href="${url}" title="<fmt:message key="global.click_delete" />">

@@ -3,6 +3,20 @@ updates:
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
+    groups:
+      github-actions:
+        patterns:
+          - '*'
     schedule:
       # Check for updates to GitHub Actions every week
+      interval: "weekly"
+  - package-ecosystem: "maven"
+    # Specify to recursively search for pom.xml files
+    directories:
+      - "**/*"
+    groups:
+      maven:
+        patterns:
+          - '*'
+    schedule:
       interval: "weekly"

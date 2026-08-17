@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ import org.xmpp.packet.JID;
 import org.xmpp.packet.Packet;
 import org.xmpp.packet.StreamError;
 
+import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.Certificate;
@@ -98,7 +99,7 @@ public class LocalIncomingServerSession extends LocalServerSession implements In
      * @param xpp XML parse that is providing data from the new established connection with the remote server.
      * @param connection the new established connection with the remote server.
      * @param directTLS true of connections are immediately encrypted (as opposed to plain text / startls).
-     * @return a new session that will receive packets or null if a problem occured while
+     * @return a new session that will receive packets or null if a problem occurred while
      *         authenticating the remote server or when acting as the Authoritative Server during
      *         a Server Dialback authentication process.
      * @throws org.xmlpull.v1.XmlPullParserException if an error occurs while parsing the XML.
@@ -185,12 +186,6 @@ public class LocalIncomingServerSession extends LocalServerSession implements In
                     features.add(starttls);
                 }
 
-                // Include available SASL Mechanisms
-                final Element saslMechanisms = SASLAuthentication.getSASLMechanisms(session);
-                if (saslMechanisms != null) {
-                    features.add(saslMechanisms);
-                }
-
                 if (ServerDialback.isEnabled()) {
                     // Also offer server dialback (when TLS is not required). Server dialback may be offered
                     // after TLS has been negotiated and a self-signed certificate is being used
@@ -239,7 +234,7 @@ public class LocalIncomingServerSession extends LocalServerSession implements In
     }
 
     @Override
-    boolean canProcess(Packet packet) {
+    boolean canDeliver(@Nonnull final Packet stanza) {
         return true;
     }
 
@@ -422,6 +417,12 @@ public class LocalIncomingServerSession extends LocalServerSession implements In
     public List<Element> getAvailableStreamFeatures()
     {
         final List<Element> result = new LinkedList<>();
+
+        // Include available SASL Mechanisms
+        if (!isAuthenticated()) {
+            result.addAll(SASLAuthentication.getSASLMechanisms(this));
+            SASLAuthentication.appendChannelBindingCapabilityIfNeeded(result);
+        }
 
         // Include Stream Compression Mechanism
         if (conn.getConfiguration().getCompressionPolicy() != Connection.CompressionPolicy.disabled && !conn.isCompressed()) {

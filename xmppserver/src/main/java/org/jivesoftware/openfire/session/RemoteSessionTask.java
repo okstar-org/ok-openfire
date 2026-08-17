@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2009 Jive Software, 2021-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2007-2009 Jive Software, 2021-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package org.jivesoftware.openfire.session;
 
 import org.jivesoftware.openfire.SessionManager;
+import org.jivesoftware.openfire.streammanagement.StreamManager;
 import org.jivesoftware.util.TaskEngine;
 import org.jivesoftware.util.cache.ClusterTask;
 import org.jivesoftware.util.cache.ExternalizableUtil;
@@ -95,7 +96,7 @@ public abstract class RemoteSessionTask implements ClusterTask<Object> {
                             // OF-2311: If closed by another cluster node, chances are that the session needs to be closed forcibly.
                             // Chances of the session being resumed are neglectable, while retaining the session in a detached state
                             // causes problems (eg: IQBindHandler could have re-issued the resource to a replacement session).
-                            ((LocalSession) session).getStreamManager().formalClose();
+                            session.markNonResumable();
                         }
                         session.close();
                     } catch (Exception e) {
@@ -114,21 +115,46 @@ public abstract class RemoteSessionTask implements ClusterTask<Object> {
         else if (operation == Operation.isClosed) {
             result = getSession().isClosed();
         }
+        else if (operation == Operation.isDetached) {
+            result = getSession().isDetached();
+        }
         else if (operation == Operation.isEncrypted) {
             result = getSession().isEncrypted();
         }
         else if (operation == Operation.getHostAddress) {
             try {
-                result = getSession().getHostAddress();
+                if (getSession().isDetached()) {
+                    Log.debug("Unable to get host-address of detached session: {}", getSession());
+                } else {
+                    result = getSession().getHostAddress();
+                }
             } catch (UnknownHostException e) {
-                Log.error("Error getting address of session: " + getSession(), e);
+                Log.error("Error getting address of session: {}", getSession(), e);
             }
         }
         else if (operation == Operation.getHostName) {
             try {
-                result = getSession().getHostName();
+                if (getSession().isDetached()) {
+                    Log.debug("Unable to get hostname of detached session: {}", getSession());
+                } else {
+                    result = getSession().getHostName();
+                }
             } catch (UnknownHostException e) {
-                Log.error("Error getting address of session: " + getSession(), e);
+                Log.error("Error getting address of session: {}", getSession(), e);
+            }
+        }
+        else if (operation == Operation.getRemotePort) {
+            if (getSession().isDetached()) {
+                Log.debug("Unable to get remote port of detached session: {}", getSession());
+            } else {
+                result = getSession().getRemotePort();
+            }
+        }
+        else if (operation == Operation.getLocalPort) {
+            if (getSession().isDetached()) {
+                Log.debug("Unable to get local port of detached session: {}", getSession());
+            } else {
+                result = getSession().getLocalPort();
             }
         }
         else if (operation == Operation.validate) {
@@ -152,6 +178,15 @@ public abstract class RemoteSessionTask implements ClusterTask<Object> {
                 }
                 catch (Exception e) {
                     Log.info("An exception was logged while executing RemoteSessionTask to close session: {}", session, e);
+                }
+            }
+        }
+        else if (operation == Operation.markNonResumable) {
+            final Session session = getSession();
+            if (session instanceof LocalSession) {
+                final StreamManager streamManager = ((LocalSession) session).getStreamManager();
+                if (streamManager != null) {
+                    streamManager.formalClose();
                 }
             }
         }
@@ -186,16 +221,19 @@ public abstract class RemoteSessionTask implements ClusterTask<Object> {
         getSoftwareVersion,
         close,
         isClosed,
+        isDetached,
         isEncrypted,
         getHostAddress,
         getHostName,
         validate,
         removeDetached,
+        markNonResumable,
         
         /**
          * Operations of c2s sessions
          */
         isInitialized,
+        isAnonymous,
         incrementConflictCount,
         hasRequestedBlocklist,
         
@@ -222,6 +260,8 @@ public abstract class RemoteSessionTask implements ClusterTask<Object> {
          */
         getLocalDomain,
         getAddress,
-        getValidatedDomains
+        getValidatedDomains,
+        getRemotePort,
+        getLocalPort
     }
 }

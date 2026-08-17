@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2021-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -937,12 +937,13 @@ public class OccupantManager implements MUCEventListener
     }
 
     @Override
-    public void roomCreated(JID roomJID) {
+    public void roomCreated(final long roomID, @Nonnull final JID roomJID) {
         // Not used.
     }
 
     @Override
-    public void roomDestroyed(@Nonnull final JID roomJID)
+    // Beware that the invocation does not properly initialize the first argument! Do not use it without fixing that!
+    public void roomDestroyed(final long unused, @Nonnull final JID roomJID)
     {
         // When a room is destroyed, remove all registered occupants for that room.
         mutex.writeLock().lock();
@@ -958,6 +959,11 @@ public class OccupantManager implements MUCEventListener
         } finally {
             mutex.writeLock().unlock();
         }
+    }
+
+    @Override
+    public void roomClearChatHistory(final long roomID, final @Nonnull JID roomJID) {
+        // Not used.
     }
 
     @Override

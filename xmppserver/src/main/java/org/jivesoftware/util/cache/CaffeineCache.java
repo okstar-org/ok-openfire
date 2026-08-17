@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2019-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package org.jivesoftware.util.cache;
 
 import org.jivesoftware.openfire.cluster.ClusteredCacheEntryListener;
+import org.jivesoftware.util.cache.lock.LocalLock;
 
 import javax.annotation.Nonnull;
 import java.io.Serializable;
@@ -25,6 +26,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 /**
  * Wraps an instance of Ben Manes' Caffeine cache in a class that inherits from
@@ -73,17 +75,17 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     private CaffeineCache( com.github.benmanes.caffeine.cache.Cache<K,V> cache, String name )
     {
         // Asserts that the configuration of the class is compatible with Jive's Cache interface contract.
-        if (!cache.policy().eviction().isPresent() )
+        if (cache.policy().eviction().isEmpty())
         {
             throw new IllegalArgumentException( "This class can only be used with cache implementations that have an eviction policy (that is weight-based)." );
         }
 
-        if (!cache.policy().eviction().get().weightedSize().isPresent())
+        if (cache.policy().eviction().get().weightedSize().isEmpty())
         {
             throw new IllegalArgumentException( "This class can only be used with cache implementations that have an eviction policy that is weight-based." );
         }
 
-        if (!cache.policy().expireAfterWrite().isPresent())
+        if (cache.policy().expireAfterWrite().isEmpty())
         {
             throw new IllegalArgumentException( "This class can only be used with cache implementations that have an expire-after-write policy." );
         }
@@ -355,7 +357,7 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     @Override
     public V get( final Object key )
     {
-        return cache.getIfPresent( key );
+        return cache.getIfPresent((K) key);
     }
 
     /**
@@ -423,15 +425,15 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     @Override
     public V remove( final Object key )
     {
-        final V old = cache.getIfPresent( key );
-        cache.invalidate( key );
+        final V old = cache.getIfPresent((K) key);
+        cache.invalidate((K) key);
         return old;
     }
 
     /**
      * Copies all of the mappings from the specified map to this map
      * (optional operation).  The effect of this call is equivalent to that
-     * of calling {@link #put(Object, Object) put(k, v)} on this map once
+     * of calling {@link #put(Serializable, Serializable)} on this map once
      * for each mapping from key <tt>k</tt> to value <tt>v</tt> in the
      * specified map.  The behavior of this operation is undefined if the
      * specified map is modified while the operation is in progress.
@@ -476,6 +478,12 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     public Set<K> keySet()
     {
         return Collections.unmodifiableSet( cache.asMap().keySet() );
+    }
+
+    @Override
+    @Nonnull
+    public Lock getLock(K key) {
+        return LocalLock.getLock(key, this);
     }
 
     @Override

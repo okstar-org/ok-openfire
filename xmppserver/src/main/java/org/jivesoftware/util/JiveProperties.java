@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ public class JiveProperties implements Map<String, String> {
      * behavioral change at some time after the server was started.
      */
     public synchronized static void disableDatabasePersistence() {
-        if (instance != null) {
+        if (instance != null && !disableDatabasePersistence) {
             throw new IllegalStateException("Cannot use this method after JiveProperties#getInstance() is already invoked (which it has).");
         }
         disableDatabasePersistence = true;
@@ -353,13 +353,13 @@ public class JiveProperties implements Map<String, String> {
     }
 
     public boolean getBooleanProperty(String name) {
-        return Boolean.valueOf(get(name));
+        return Boolean.parseBoolean(get(name));
     }
 
     public boolean getBooleanProperty(String name, boolean defaultValue) {
         String value = get(name);
         if (value != null) {
-            return Boolean.valueOf(value);
+            return Boolean.parseBoolean(value);
         }
         else {
             return defaultValue;

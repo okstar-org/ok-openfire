@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
 import java.util.Date;
 import java.util.TimeZone;
 
@@ -29,7 +30,7 @@ public class XMPPDateTimeFormatTest {
     private final String TEST_DATE = "2013-01-25T18:07:22.768Z";
     DateFormat df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
     private final XMPPDateTimeFormat xmppDateTimeFormat = new XMPPDateTimeFormat();
-    
+
     @Test
     public void failTest() {
         Date parsedDate = null;
@@ -76,14 +77,11 @@ public class XMPPDateTimeFormatTest {
         final String testValue = "This is not a valid date value";
 
         // Execute system under test
-        try {
-            xmppDateTimeFormat.parseString(testValue);
+        ParseException e =
+            assertThrows(ParseException.class, () -> xmppDateTimeFormat.parseString(testValue), "An exception should have been thrown (but was not).");
 
-            // Verify results
-            fail("An exception should have been thrown (but was not).");
-        } catch (ParseException e) {
-            assertTrue(e.getMessage().contains(testValue));
-        }
+        // Verify results
+        assertTrue(e.getMessage().contains(testValue));
     }
 
     @Test
@@ -124,7 +122,53 @@ public class XMPPDateTimeFormatTest {
         final Date result = xmppDateTimeFormat.parseString(testValue);
 
         // Verify results
-        long expected = 1426805655841L; // Epoch value of Thu, 19 Mar 2015 22:54:15 GMT
+        long expected = 1426805655841L; // Epoch value of Thu, 19 Mar 2015 22:54:15:841 GMT
         assertEquals( expected, result.getTime() );
+    }
+
+    @Test
+    public void testFormatDate() throws Exception
+    {
+        // Setup fixture
+        final Date testValue = new Date(1426805655841L); // Epoch value of Thu, 19 Mar 2015 22:54:15:841 GMT
+
+        // Execute system under test
+        final String result = XMPPDateTimeFormat.format(testValue);
+
+        // Verify results
+        assertEquals("2015-03-19T22:54:15.841Z", result);
+    }
+
+    @Test
+    public void testFormatDateNull() throws Exception
+    {
+        // Setup fixture
+        final Date testValue = null;
+
+        // Execute system under test & verify results
+        assertThrows(NullPointerException.class, () -> XMPPDateTimeFormat.format(testValue));
+    }
+
+    @Test
+    public void testFormatInstant() throws Exception
+    {
+        // Setup fixture
+        final Instant testValue = Instant.ofEpochMilli(1426805655841L); // Epoch value of Thu, 19 Mar 2015 22:54:15:841 GMT
+
+        // Execute system under test
+        final String result = XMPPDateTimeFormat.format(testValue);
+
+        // Verify results
+        assertEquals("2015-03-19T22:54:15.841Z", result);
+    }
+
+    @Test
+    public void testFormatInstantNull() throws Exception
+    {
+        // Setup fixture
+        final Instant testValue = null;
+
+        // Execute system under test & verify results
+        assertThrows(NullPointerException.class, () -> XMPPDateTimeFormat.format(testValue));
     }
 }

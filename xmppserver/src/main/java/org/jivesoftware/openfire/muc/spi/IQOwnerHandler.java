@@ -35,6 +35,8 @@ import org.xmpp.forms.FormField;
 import org.xmpp.forms.FormField.Type;
 import org.xmpp.packet.*;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -74,16 +76,18 @@ public class IQOwnerHandler {
      * </ul>
      *
      * @param packet the IQ packet sent by an owner of the room.
-     * @param sender the occupant data of the user that sent the packet.
+     * @param actorOccupant the occupant that sent the packet, if it was sent by an occupant.
      * @throws ForbiddenException if the user does not have enough permissions (ie. is not an owner).
      * @throws ConflictException If the room was going to lose all of its owners.
      * @throws CannotBeInvitedException never
      * @throws NotAcceptableException if the room requires a password that was not supplied
      */
-    public void handleIQ(IQ packet, MUCRole sender) throws ForbiddenException, ConflictException, CannotBeInvitedException, NotAcceptableException
+    public void handleIQ(@Nonnull final IQ packet, @Nullable final MUCOccupant actorOccupant) throws ForbiddenException, ConflictException, CannotBeInvitedException, NotAcceptableException, NotAllowedException
     {
+        final Affiliation actorAffiliation = actorOccupant != null ? actorOccupant.getAffiliation() : room.getAffiliation(packet.getFrom());
+
         // Only owners can send packets with the namespace "http://jabber.org/protocol/muc#owner"
-        if (MUCRole.Affiliation.owner != sender.getAffiliation()) {
+        if (Affiliation.owner != actorAffiliation) {
             throw new ForbiddenException();
         }
 
@@ -93,13 +97,13 @@ public class IQOwnerHandler {
         // Analyze the action to perform based on the included element
         Element formElement = element.element(QName.get("x", "jabber:x:data"));
         if (formElement != null) {
-            handleDataFormElement(sender, formElement);
+            handleDataFormElement(actorAffiliation, packet.getFrom(), formElement);
         }
         else {
             Element destroyElement = element.element("destroy");
             if (destroyElement != null) {
                 if (room.getMUCService().getMUCDelegate() != null) {
-                    if (!room.getMUCService().getMUCDelegate().destroyingRoom(room.getName(), sender.getUserAddress())) {
+                    if (!room.getMUCService().getMUCDelegate().destroyingRoom(room.getName(), packet.getFrom())) {
                         // Delegate said no, reject destroy request.
                         throw new ForbiddenException();
                     }
@@ -110,7 +114,8 @@ public class IQOwnerHandler {
                 if (jid != null) {
                     alternateJID = new JID(jid);
                 }
-                room.destroyRoom(alternateJID, destroyElement.elementTextTrim("reason"));
+                final String password = destroyElement.elementTextTrim("password");
+                room.destroyRoom(alternateJID, password, destroyElement.elementTextTrim("reason"));
             }
             else {
                 // If no element was included in the query element then answer the
@@ -138,14 +143,16 @@ public class IQOwnerHandler {
      * Handles packets that includes a data form. The data form was sent using an element with name
      * "x" and namespace "jabber:x:data".
      *
-     * @param sender  the occupant data of the user that sent the data form.
+     * @param actorAffiliation the room affiliation of the user that sent the data form.
+     * @param actorJid the (real) user address of the user that sent the data form.
      * @param formElement the element that contains the data form specification.
      * @throws ForbiddenException    if the user does not have enough privileges.
      * @throws ConflictException If the room was going to lose all of its owners.
      * @throws NotAcceptableException if the room requires a password that was not supplied
      */
-    private void handleDataFormElement(MUCRole sender, Element formElement)
-            throws ForbiddenException, ConflictException, NotAcceptableException {
+    private void handleDataFormElement(@Nonnull final Affiliation actorAffiliation, @Nullable final JID actorJid, @Nonnull final Element formElement)
+        throws ForbiddenException, ConflictException, NotAcceptableException, NotAllowedException
+    {
         DataForm completedForm = new DataForm(formElement);
 
         switch(completedForm.getType()) {
@@ -164,12 +171,12 @@ public class IQOwnerHandler {
             }
             // The owner is requesting a reserved room or is changing the current configuration
             else {
-                processConfigurationForm(completedForm, sender);
+                processConfigurationForm(completedForm, actorAffiliation, actorJid);
             }
             // If the room was locked, unlock it and send to the owner the "room is now unlocked"
             // message
             if (room.isLocked() && !room.isManuallyLocked()) {
-                room.unlock(sender);
+                room.unlock(actorAffiliation);
             }
             break;
             
@@ -184,13 +191,14 @@ public class IQOwnerHandler {
      * configuration as well as the list of owners and admins.
      *
      * @param completedForm the completed form sent by an owner of the room.
-     * @param sender the occupant data of the user that sent the completed form.
+     * @param actorAffiliation the room affiliation of the user that sent the completed form.
+     * @param actorJid the (real) user address of the user that sent the completed form.
      * @throws ForbiddenException if the user does not have enough privileges.
      * @throws ConflictException If the room was going to lose all of its owners.
      * @throws NotAcceptableException if the room requires a password that was not supplied
      */
-    private void processConfigurationForm(DataForm completedForm, MUCRole sender)
-            throws ForbiddenException, ConflictException, NotAcceptableException
+    private void processConfigurationForm(@Nonnull final DataForm completedForm, @Nonnull final Affiliation actorAffiliation, @Nullable final JID actorJid)
+        throws ForbiddenException, ConflictException, NotAcceptableException, NotAllowedException
     {
         List<String> values;
         FormField field;
@@ -203,7 +211,7 @@ public class IQOwnerHandler {
             for (String value : field.getValues()) {
                 // XEP-0045: "Affiliations are granted, revoked, and 
                 // maintained based on the user's bare JID, (...)"
-                if (value != null && value.trim().length() != 0) {
+                if (value != null && !value.trim().isEmpty()) {
                     // could be a group jid
                     admins.add(GroupJID.fromString((value.trim())).asBareJID());
                 }
@@ -218,7 +226,7 @@ public class IQOwnerHandler {
             for(String value : field.getValues()) {
                 // XEP-0045: "Affiliations are granted, revoked, and 
                 // maintained based on the user's bare JID, (...)"
-                if (value != null && value.trim().length() != 0) {
+                if (value != null && !value.trim().isEmpty()) {
                     // could be a group jid
                     owners.add(GroupJID.fromString((value.trim())).asBareJID());
                 }
@@ -262,12 +270,24 @@ public class IQOwnerHandler {
         field = completedForm.getField("muc#roomconfig_presencebroadcast");
         if (field != null) {
             values = new ArrayList<>(field.getValues());
-            room.setRolesToBroadcastPresence(values.stream().map(MUCRole.Role::valueOf).collect(Collectors.toList()));
+            room.setRolesToBroadcastPresence(values.stream().map(Role::valueOf).collect(Collectors.toList()));
         }
 
         field = completedForm.getField("muc#roomconfig_publicroom");
         if (field != null) {
             room.setPublicRoom( parseFirstValueAsBoolean( field, true ) );
+        }
+
+        field = completedForm.getField("{http://igniterealtime.org}muc#roomconfig_retireondel");
+        if (field != null) {
+            final boolean newValue = parseFirstValueAsBoolean(field, false);
+            room.setRetireOnDeletion(newValue);
+        }
+
+        field = completedForm.getField("{http://igniterealtime.org}muc#roomconfig_preservehistondel");
+        if (field != null) {
+            final boolean newValue = parseFirstValueAsBoolean(field, true);
+            room.setPreserveHistOnRoomDeletionEnabled(newValue);
         }
 
         field = completedForm.getField("muc#roomconfig_persistentroom");
@@ -287,7 +307,7 @@ public class IQOwnerHandler {
 
         field = completedForm.getField("muc#roomconfig_membersonly");
         if (field != null) {
-            presences.addAll(room.setMembersOnly( parseFirstValueAsBoolean( field, true ) ) );
+            presences.addAll(room.setMembersOnly( parseFirstValueAsBoolean( field, true ), actorAffiliation, actorJid ) );
         }
 
         field = completedForm.getField("muc#roomconfig_allowinvites");
@@ -411,8 +431,8 @@ public class IQOwnerHandler {
         room.getFmucHandler().applyConfigurationChanges();
 
         // Set the new owners and admins of the room
-        presences.addAll(room.addOwners(owners, sender));
-        presences.addAll(room.addAdmins(admins, sender));
+        presences.addAll(room.addOwners(owners, actorAffiliation));
+        presences.addAll(room.addAdmins(admins, actorAffiliation));
 
         if (ownersSent) {
             // Change the affiliation to "member" for the current owners that won't be neither
@@ -423,7 +443,7 @@ public class IQOwnerHandler {
             for (JID jid : ownersToRemove) {
                 // ignore group jids
                 if (!GroupJID.isGroup(jid)) {
-                    presences.addAll(room.addMember(jid, null, sender));
+                    presences.addAll(room.addMember(jid, null, actorAffiliation));
                 }
             }
         }
@@ -437,7 +457,7 @@ public class IQOwnerHandler {
             for (JID jid : adminsToRemove) {
                 // ignore group jids
                 if (!GroupJID.isGroup(jid)) {
-                    presences.addAll(room.addMember(jid, null, sender));
+                    presences.addAll(room.addMember(jid, null, actorAffiliation));
                 }
             }
         }
@@ -453,21 +473,21 @@ public class IQOwnerHandler {
             room.send(presence, room.getSelfRepresentation());
         }
 
-        // XEP-0045 section 10.2.1 "Notification of Configuration Changes: A room MUST send notification to all occupants
-        // when the room configuration changes in a way that has an impact on the privacy or security profile of the room.
-        if (!statusCodes.isEmpty()) {
-            final Message message = new Message();
-            message.setFrom(room.getJID());
-            message.setTo(room.getJID());
-            message.setType(Message.Type.groupchat);
-            final Element x = message.addChildElement("x", "http://jabber.org/protocol/muc#user");
-            statusCodes.forEach(code -> x.addElement("status").addAttribute("code", String.valueOf(code)));
-
-            room.send(message, room.getSelfRepresentation());
+        // XEP-0045 section 10.2.1 Notification of Configuration Changes: "A room MUST send notification to all
+        // occupants when the room configuration changes in a way that has an impact on the privacy or security profile
+        // of the room. [...] For any other configuration change, the room SHOULD send status code 104 so that
+        // interested occupants can retrieve the updated room configuration if desired."
+        if (statusCodes.isEmpty()) {
+            statusCodes.add(104); // This assumes that any time a form is submitted, it applies at least one change.
         }
-    }
+        final Message message = new Message();
+        message.setFrom(room.getJID());
+        message.setTo(room.getJID());
+        message.setType(Message.Type.groupchat);
+        final Element x = message.addChildElement("x", "http://jabber.org/protocol/muc#user");
+        statusCodes.forEach(code -> x.addElement("status").addAttribute("code", String.valueOf(code)));
 
-    private void refreshConfigurationFormValues() {
+        room.send(message, room.getSelfRepresentation());
     }
 
     private Element generateProbeResult(Locale preferredLocale) {
@@ -519,6 +539,10 @@ public class IQOwnerHandler {
                 LocaleUtils.getLocalizedString("muc.form.conf.owner_persistentroom", preferredLocale),
                 Type.boolean_type);
 
+        configurationForm.addField("{http://igniterealtime.org}muc#roomconfig_retireondel",
+            LocaleUtils.getLocalizedString("muc.form.conf.owner_retireondel", preferredLocale),
+            Type.boolean_type);
+
         configurationForm.addField("muc#roomconfig_moderatedroom",
                 LocaleUtils.getLocalizedString("muc.form.conf.owner_moderatedroom", preferredLocale),
                 Type.boolean_type);
@@ -564,6 +588,10 @@ public class IQOwnerHandler {
         configurationForm.addField("muc#roomconfig_enablelogging",
                 LocaleUtils.getLocalizedString("muc.form.conf.owner_enablelogging", preferredLocale),
                 Type.boolean_type);
+
+        configurationForm.addField("{http://igniterealtime.org}muc#roomconfig_preservehistondel",
+            LocaleUtils.getLocalizedString("muc.form.conf.owner_preservehistondel", preferredLocale),
+            Type.boolean_type);
 
         configurationForm.addField("x-muc#roomconfig_reservednick",
                 LocaleUtils.getLocalizedString("muc.form.conf.owner_reservednick", preferredLocale),
@@ -614,7 +642,7 @@ public class IQOwnerHandler {
 
             field = configurationForm.getField("muc#roomconfig_presencebroadcast");
             field.clearValues();
-            for (MUCRole.Role roleToBroadcast : room.getRolesToBroadcastPresence()) {
+            for (Role roleToBroadcast : room.getRolesToBroadcastPresence()) {
                 field.addValue(roleToBroadcast.toString());
             }
 
@@ -629,6 +657,10 @@ public class IQOwnerHandler {
             field = configurationForm.getField("muc#roomconfig_moderatedroom");
             field.clearValues();
             field.addValue((room.isModerated() ? "1" : "0"));
+
+            field = configurationForm.getField("{http://igniterealtime.org}muc#roomconfig_retireondel");
+            field.clearValues();
+            field.addValue((room.isRetireOnDeletion() ? "1" : "0"));
 
             field = configurationForm.getField("muc#roomconfig_membersonly");
             field.clearValues();
@@ -657,6 +689,10 @@ public class IQOwnerHandler {
             field = configurationForm.getField("muc#roomconfig_enablelogging");
             field.clearValues();
             field.addValue((room.isLogEnabled() ? "1" : "0"));
+
+            field = configurationForm.getField("{http://igniterealtime.org}muc#roomconfig_preservehistondel");
+            field.clearValues();
+            field.addValue((room.isPreserveHistOnRoomDeletionEnabled() ? "1" : "0"));
 
             field = configurationForm.getField("x-muc#roomconfig_reservednick");
             field.clearValues();

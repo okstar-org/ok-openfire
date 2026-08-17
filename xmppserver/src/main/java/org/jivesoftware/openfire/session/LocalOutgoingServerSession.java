@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.jivesoftware.openfire.session;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Interner;
 import com.google.common.collect.Interners;
 import org.dom4j.Element;
@@ -23,6 +24,7 @@ import org.jivesoftware.openfire.*;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
 import org.jivesoftware.openfire.event.ServerSessionEventDispatcher;
 import org.jivesoftware.openfire.nio.NettySessionInitializer;
+import org.jivesoftware.openfire.nio.NetworkEntityUnreachableException;
 import org.jivesoftware.openfire.server.OutgoingServerSocketReader;
 import org.jivesoftware.openfire.server.RemoteServerManager;
 import org.jivesoftware.openfire.server.ServerDialback;
@@ -33,16 +35,21 @@ import org.jivesoftware.util.SystemProperty;
 import org.jivesoftware.util.TaskEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.helpers.MessageFormatter;
 import org.xmpp.packet.*;
 
 import javax.annotation.Nonnull;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 /**
@@ -78,6 +85,18 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
     public static final SystemProperty<Duration> INITIALISE_TIMEOUT_SECONDS = SystemProperty.Builder.ofType(Duration.class)
         .setKey("xmpp.server.session.initialise-timeout")
         .setDefaultValue(Duration.ofSeconds(10))
+        .setMinValue(Duration.ZERO)
+        .setChronoUnit(ChronoUnit.SECONDS)
+        .setDynamic(true)
+        .build();
+
+    /**
+     * Maximum time to wait for an outgoing server session's teardown to complete before abandoning a stanza re-delivery attempt.
+     */
+    public static final SystemProperty<Duration> REDELIVERY_TIMEOUT_SECONDS = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("xmpp.server.session.redelivery-timeout")
+        .setDefaultValue(Duration.ofSeconds(30))
+        .setMinValue(Duration.ZERO)
         .setChronoUnit(ChronoUnit.SECONDS)
         .setDynamic(true)
         .build();
@@ -89,7 +108,7 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
      * Authenticates the local domain to the remote domain. Once authenticated the remote domain can be expected to
      * start accepting data from the local domain.
      *
-     * This implementation will attempt to re-use an existing connection. An connection is deemed re-usable when it is either:
+     * This implementation will attempt to re-use an existing connection. A connection is deemed re-usable when it is either:
      * <ul>
      *     <li>authenticated to the remote domain itself, or:</li>
      *     <li>authenticated to a sub- or superdomain of the remote domain AND offers dialback.</li>
@@ -101,52 +120,64 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
      * used unless this default is overridden by the <b>xmpp.server.socket.remotePort</b> property.
      *
      * @param domainPair the local and remote domain for which authentication is to be established.
-     * @return True if the domain was authenticated by the remote server.
+     * @return a {@link DomainAuthResult} indicating whether authentication succeeded, together with a
+     *         human-readable diagnostic log of the steps taken during the attempt.
      */
-    public static boolean authenticateDomain(final DomainPair domainPair) {
+    public static DomainAuthResult authenticateDomain(final DomainPair domainPair)
+    {
         final String localDomain = domainPair.getLocal();
         final String remoteDomain = domainPair.getRemote();
         final Logger log = LoggerFactory.getLogger( Log.getName() + "[Authenticate local domain: '" + localDomain + "' to remote domain: '" + remoteDomain + "']" );
 
+        final List<String> diagnosticLog = new ArrayList<>();
+
         log.debug( "Start domain authentication ..." );
-        if (remoteDomain == null || remoteDomain.length() == 0 || remoteDomain.trim().indexOf(' ') > -1) {
+        diagnosticLog.add("DEBUG: Start domain authentication ...");
+        if (remoteDomain == null || remoteDomain.isEmpty() || remoteDomain.trim().indexOf(' ') > -1) {
             // Do nothing if the target domain is empty, null or contains whitespaces
             log.warn( "Unable to authenticate: remote domain is invalid." );
-            return false;
+            diagnosticLog.add("WARN: Unable to authenticate: remote domain is invalid.");
+            return DomainAuthResult.failure(diagnosticLog);
         }
         try {
             // Check if the remote domain is in the blacklist
             if (!RemoteServerManager.canAccess(remoteDomain)) {
                 log.info( "Unable to authenticate: Remote domain is not accessible according to our configuration (typical causes: server federation is disabled, or domain is blacklisted)." );
-                return false;
+                diagnosticLog.add("INFO: Unable to authenticate: Remote domain is not accessible according to our configuration (typical causes: server federation is disabled, or domain is blacklisted).");
+                return DomainAuthResult.failure(diagnosticLog);
             }
 
             log.debug( "Searching for pre-existing outgoing sessions to the remote domain (if one exists, it will be re-used) ..." );
+            diagnosticLog.add("DEBUG: Searching for pre-existing outgoing sessions to the remote domain (if one exists, it will be re-used) ...");
             OutgoingServerSession session;
             SessionManager sessionManager = SessionManager.getInstance();
             if (sessionManager == null) {
                 // Server is shutting down while we are trying to create a new s2s connection
                 log.warn( "Unable to authenticate: a SessionManager instance is not available. This should not occur unless Openfire is starting up or shutting down." );
-                return false;
+                diagnosticLog.add("WARN: Unable to authenticate: a SessionManager instance is not available. This should not occur unless Openfire is starting up or shutting down.");
+                return DomainAuthResult.failure(diagnosticLog);
             }
             session = sessionManager.getOutgoingServerSession(domainPair);
             if (session != null && session.checkOutgoingDomainPair(domainPair))
             {
                 // Do nothing since the domain has already been authenticated.
                 log.debug( "Authentication successful (domain was already authenticated in the pre-existing session)." );
+                diagnosticLog.add("DEBUG: Authentication successful (domain was already authenticated in the pre-existing session).");
                 //inform all listeners as well.
                 ServerSessionEventDispatcher.dispatchEvent(session, ServerSessionEventDispatcher.EventType.session_created);
-                return true;
+                return DomainAuthResult.success(diagnosticLog);
             }
             if (session != null && !session.isUsingServerDialback() )
             {
                 log.debug( "Dialback was not used for '{}'. This session cannot be re-used.", domainPair );
+                diagnosticLog.add("DEBUG: " + fmt("Dialback was not used for '{}'. This session cannot be re-used.", domainPair));
                 session = null;
             }
 
             if (session == null)
             {
                 log.debug( "There are no pre-existing outgoing sessions to the remote domain itself. Searching for pre-existing outgoing sessions to super- or subdomains of the remote domain (if one exists, it might be re-usable) ..." );
+                diagnosticLog.add("DEBUG: There are no pre-existing outgoing sessions to the remote domain itself. Searching for pre-existing outgoing sessions to super- or subdomains of the remote domain (if one exists, it might be re-usable) ...");
 
                 for ( IncomingServerSession incomingSession : sessionManager.getIncomingServerSessions( remoteDomain ) )
                 {
@@ -158,16 +189,19 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
                         if (session != null)
                         {
                             log.debug( "An outgoing session to a different domain ('{}') hosted on the remote domain was found.", otherRemoteDomain );
+                            diagnosticLog.add("DEBUG: " + fmt("An outgoing session to a different domain ('{}') hosted on the remote domain was found.", otherRemoteDomain));
 
                             // As this sub/superdomain is different from the original remote domain, we need to check if it supports dialback.
                             if ( session.isUsingServerDialback() )
                             {
                                 log.debug( "Dialback was used for '{}'. This session can be re-used.", otherRemoteDomain );
+                                diagnosticLog.add("DEBUG: " + fmt("Dialback was used for '{}'. This session can be re-used.", otherRemoteDomain));
                                 break;
                             }
                             else
                             {
                                 log.debug( "Dialback was not used for '{}'. This session cannot be re-used.", otherRemoteDomain );
+                                diagnosticLog.add("DEBUG: " + fmt("Dialback was not used for '{}'. This session cannot be re-used.", otherRemoteDomain));
                                 session = null;
                             }
                         }
@@ -176,49 +210,69 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
 
                 if (session == null) {
                     log.debug( "There are no pre-existing session to other domains hosted on the remote domain." );
+                    diagnosticLog.add("DEBUG: There are no pre-existing session to other domains hosted on the remote domain.");
                 }
             }
 
             if ( session != null )
             {
                 log.debug( "A pre-existing session can be re-used. The session was established using server dialback so it is possible to do piggybacking to authenticate more domains." );
+                diagnosticLog.add("DEBUG: A pre-existing session can be re-used. The session was established using server dialback so it is possible to do piggybacking to authenticate more domains.");
                 if ( session.checkOutgoingDomainPair(domainPair) )
                 {
                     // Do nothing since the domain has already been authenticated.
                     log.debug( "Authentication successful (domain was already authenticated in the pre-existing session)." );
-                    return true;
+                    diagnosticLog.add("DEBUG: Authentication successful (domain was already authenticated in the pre-existing session).");
+                    return DomainAuthResult.success(diagnosticLog);
                 }
 
                 // A session already exists so authenticate the domain using that session.
                 if ( session.authenticateSubdomain(domainPair) )
                 {
                     log.debug( "Authentication successful (domain authentication was added using a pre-existing session)." );
-                    return true;
+                    diagnosticLog.add("DEBUG: Authentication successful (domain authentication was added using a pre-existing session).");
+                    return DomainAuthResult.success(diagnosticLog);
                 }
                 else
                 {
                     log.warn( "Unable to authenticate: Unable to add authentication to pre-exising session." );
-                    return false;
+                    diagnosticLog.add("WARN: Unable to authenticate: Unable to add authentication to pre-exising session.");
+                    return DomainAuthResult.failure(diagnosticLog);
                 }
             }
             else
             {
                 try {
                     log.debug("Unable to re-use an existing session. Creating a new session ...");
+                    diagnosticLog.add("DEBUG: Unable to re-use an existing session. Creating a new session ...");
                     int port = RemoteServerManager.getPortForServer(remoteDomain);
-                    session = createOutgoingSession(domainPair, port);
+                    session = createOutgoingSession(domainPair, port, diagnosticLog);
                     if (session != null) {
                         log.debug("Created a new session.");
+                        diagnosticLog.add("DEBUG: Created a new session.");
 
                         session.addOutgoingDomainPair(domainPair);
-                        sessionManager.outgoingServerSessionCreated((LocalOutgoingServerSession) session);
+                        try {
+                            sessionManager.outgoingServerSessionCreated((LocalOutgoingServerSession) session);
+                        } catch (Exception e) {
+                            log.debug("Failed to register close listener for newly created session to '{}'. Rolling back route registration to prevent an orphaned route.", remoteDomain, e);
+                            diagnosticLog.add("DEBUG: " + fmt("Failed to register close listener for newly created session to '{}'. Rolling back route registration to prevent an orphaned route.", remoteDomain) + " - " + e);
+                            // Explicitly remove all routes that were just added, as the close listener that would normally do so may never have been registered.
+                            for (DomainPair pair : session.getOutgoingDomainPairs()) {
+                                XMPPServer.getInstance().getRoutingTable().removeServerRoute(pair);
+                            }
+                            throw e;
+                        }
+
                         log.debug("Authentication successful.");
+                        diagnosticLog.add("DEBUG: Authentication successful.");
                         //inform all listeners as well.
                         ServerSessionEventDispatcher.dispatchEvent(session, ServerSessionEventDispatcher.EventType.session_created);
-                        return true;
+                        return DomainAuthResult.success(diagnosticLog);
                     } else {
                         log.warn("Unable to authenticate: Fail to create new session.");
-                        return false;
+                        diagnosticLog.add("WARN: Unable to authenticate: Fail to create new session.");
+                        return DomainAuthResult.failure(diagnosticLog);
                     }
                 } catch (Exception e) {
                     if (session != null) {
@@ -231,8 +285,17 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
         catch (Exception e)
         {
             log.error( "An exception occurred while authenticating to remote domain '{}'!", remoteDomain, e );
-            return false;
+            diagnosticLog.add("ERROR: " + fmt("An exception occurred while authenticating to remote domain '{}'!", remoteDomain) + " - " + e);
+            return DomainAuthResult.failure(diagnosticLog);
         }
+    }
+
+    /**
+     * Formats an SLF4J-style message pattern with arguments, producing the interpolated string.
+     * Used to populate the diagnostic log alongside SLF4J logger calls.
+     */
+    private static String fmt(final String pattern, final Object... args) {
+        return MessageFormatter.arrayFormat(pattern, args).getMessage();
     }
 
     /**
@@ -245,11 +308,25 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
      * @param port default port to use to establish the connection.
      * @return new outgoing session to a remote domain, or null.
      */
-    // package-protected to facilitate unit testing..
+    @VisibleForTesting
     static LocalOutgoingServerSession createOutgoingSession(@Nonnull final DomainPair domainPair, int port) {
+        return createOutgoingSession(domainPair, port, new ArrayList<>());
+    }
+
+    /**
+     * Establishes a new outgoing session to a remote domain, appending diagnostic messages to the
+     * supplied log as the attempt progresses.
+     *
+     * @param domainPair    the local and remote domain for which a session is to be established.
+     * @param port          default port to use to establish the connection.
+     * @param diagnosticLog mutable list to which human-readable, level-prefixed diagnostic entries are appended.
+     * @return new outgoing session to a remote domain, or null.
+     */
+    private static LocalOutgoingServerSession createOutgoingSession(@Nonnull final DomainPair domainPair, int port, @Nonnull final List<String> diagnosticLog) {
         final Logger log = LoggerFactory.getLogger(Log.getName() + "[Create outgoing session for: " + domainPair + "]");
 
         log.debug("Creating new session...");
+        diagnosticLog.add("DEBUG: Creating new session...");
 
         ConnectionListener listener = XMPPServer
             .getInstance()
@@ -260,9 +337,22 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
             // Wait for the future to give us a session...
             // Set a read timeout so that we don't keep waiting forever
             return (LocalOutgoingServerSession) sessionInitialiser.init(listener).get(INITIALISE_TIMEOUT_SECONDS.getValue().getSeconds(), TimeUnit.SECONDS);
+        } catch (NetworkEntityUnreachableException e) {
+            Log.warn("Cannot connect to XMPP domain '{}' (from '{}'): Unable to create a socket connection to a host that associated " +
+                "to the domain. This is typically caused by an outage (the remote server may be turned off) or a network configuration " +
+                "issue (eg: missing or invalid DNS records, restrictive firewalls, etc.).", domainPair.getRemote(), domainPair.getLocal());
+            diagnosticLog.add("WARN: " + fmt("Cannot connect to XMPP domain '{}' (from '{}'): Unable to create a socket connection to a host that associated to the domain. This is typically caused by an outage (the remote server may be turned off) or a network configuration issue (eg: missing or invalid DNS records, restrictive firewalls, etc.).", domainPair.getRemote(), domainPair.getLocal()));
+            sessionInitialiser.stop();
+        } catch (TimeoutException e) {
+            Log.warn("Cannot connect to XMPP domain '{}' (from '{}'): The connection attempt timed out after {}. This is typically caused by a " +
+                "network configuration issue (eg: missing or invalid DNS records, restrictive firewalls, etc.).",
+                domainPair.getRemote(), domainPair.getLocal(), INITIALISE_TIMEOUT_SECONDS.getValue());
+            diagnosticLog.add("WARN: " + fmt("Cannot connect to XMPP domain '{}' (from '{}'): The connection attempt timed out after {}. This is typically caused by a network configuration issue (eg: missing or invalid DNS records, restrictive firewalls, etc.).", domainPair.getRemote(), domainPair.getLocal(), INITIALISE_TIMEOUT_SECONDS.getValue()));
+            sessionInitialiser.stop();
         } catch (Exception e) {
             // This might be RFC6120, section 5.4.2.2 "Failure Case" or even an unrelated problem. Handle 'normally'.
             log.warn("An exception occurred while creating a session. Closing connection.", e);
+            diagnosticLog.add("WARN: An exception occurred while creating a session. Closing connection. - " + e);
             sessionInitialiser.stop();
         }
 
@@ -284,8 +374,8 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
     }
 
     @Override
-    boolean canProcess(Packet packet) {
-        final DomainPair domainPair = new DomainPair(packet.getFrom().getDomain(), packet.getTo().getDomain());
+    boolean canDeliver(@Nonnull final Packet stanza) {
+        final DomainPair domainPair = new DomainPair(stanza.getFrom().getDomain(), stanza.getTo().getDomain());
         boolean processed = true;
         synchronized (remoteAuthMutex.intern(new JID(null, domainPair.getRemote(), null))) {
             if (!checkOutgoingDomainPair(domainPair) && !authenticateSubdomain(domainPair)) {
@@ -294,7 +384,7 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
             }
         }
         if (!processed) {
-            returnErrorToSenderAsync(packet);
+            returnErrorToSenderAsync(stanza);
         }
         return processed;
     }
@@ -303,7 +393,49 @@ public class LocalOutgoingServerSession extends LocalServerSession implements Ou
     void deliver(Packet packet) throws UnauthorizedException {
         if (!conn.isClosed()) {
             conn.deliver(packet);
+            return;
         }
+
+        // Guard against a double bounce: if re-routing this error stanza fails (i.e. the remote server is still
+        // unreachable after teardown), OutgoingSessionPromise would attempt to return an error to the original sender,
+        // producing an error in response to an error.
+        if (packet.getError() != null) {
+            Log.debug("Dropping error stanza to {} on closed connection to avoid a double-bounce: {}", packet.getTo(), packet);
+            return;
+        }
+
+        // The connection is closed but teardown may still be in progress - the routing table entry for this session
+        // might not yet be removed. Waiting for closeFuture guarantees that all ConnectionCloseListeners (including
+        // route removal) have finished before we re-route, so the packet router will not hand the stanza straight back
+        // to this dying session. OF-3176
+        Log.info("Connection to {} is closed; will attempt re-delivery once teardown completes.", packet.getTo());
+
+        final Packet stanza = packet.createCopy(); // Make a defensive copy before scheduling the callback to ensure that the original data gets rescheduled.
+        final long timeoutSeconds = REDELIVERY_TIMEOUT_SECONDS.getValue().toSeconds();
+        final CompletableFuture<Void> closeFuture = conn.getCloseFuture().toCompletableFuture();
+        final CompletableFuture<Void> timeoutFuture = new CompletableFuture<>();
+        CompletableFuture.delayedExecutor(timeoutSeconds, TimeUnit.SECONDS)
+            .execute(() -> timeoutFuture.completeExceptionally(new TimeoutException("Timed out waiting for connection teardown.")));
+
+        CompletableFuture.anyOf(closeFuture, timeoutFuture)
+            .whenCompleteAsync((v, ex) -> {
+                final Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
+                if (cause instanceof TimeoutException) {
+                    // The teardown did not complete within the configured window. We cannot safely re-route.
+                    Log.warn("Timed out after {}s waiting for connection teardown to complete for {}; dropping stanza and attempting to notify sender if appropriate. Packet: {}", timeoutSeconds, stanza.getTo(), stanza);
+                    returnErrorToSenderAsync(stanza);
+                } else if (cause != null) {
+                    // Unexpected exception (e.g. CancellationException). Log with stack trace and attempt sender notification when appropriate.
+                    Log.warn("Unexpected exception while waiting for connection teardown to complete for {}; dropping stanza and attempting to notify sender if appropriate. Packet: {}", stanza.getTo(), stanza, cause);
+                    returnErrorToSenderAsync(stanza);
+                } else {
+                    // Teardown is complete. The route for this session has been removed. Delegate back to the packet
+                    // router, which will either find a concurrently-established session or trigger authenticateDomain()
+                    // to create a new one.
+                    Log.debug("Connection teardown complete; re-routing stanza to {}.", stanza.getTo());
+                    XMPPServer.getInstance().getPacketRouter().route(stanza);
+                }
+            });
     }
 
     @Override

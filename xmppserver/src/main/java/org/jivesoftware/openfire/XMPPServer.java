@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@ import org.jivesoftware.openfire.admin.AdminManager;
 import org.jivesoftware.openfire.archive.ArchiveManager;
 import org.jivesoftware.openfire.audit.AuditManager;
 import org.jivesoftware.openfire.audit.spi.AuditManagerImpl;
-import org.jivesoftware.openfire.auth.AuthFactory;
 import org.jivesoftware.openfire.cluster.ClusterManager;
 import org.jivesoftware.openfire.cluster.ClusterMonitor;
 import org.jivesoftware.openfire.cluster.NodeID;
@@ -40,7 +39,6 @@ import org.jivesoftware.openfire.entitycaps.EntityCapabilitiesManager;
 import org.jivesoftware.openfire.filetransfer.DefaultFileTransferManager;
 import org.jivesoftware.openfire.filetransfer.FileTransferManager;
 import org.jivesoftware.openfire.filetransfer.proxy.FileTransferProxy;
-import org.jivesoftware.openfire.group.GroupManager;
 import org.jivesoftware.openfire.handler.*;
 import org.jivesoftware.openfire.keystore.CertificateStoreManager;
 import org.jivesoftware.openfire.keystore.IdentityStore;
@@ -57,7 +55,6 @@ import org.jivesoftware.openfire.roster.RosterItem;
 import org.jivesoftware.openfire.roster.RosterItemProvider;
 import org.jivesoftware.openfire.roster.RosterManager;
 import org.jivesoftware.openfire.sasl.AnonymousSaslServer;
-import org.jivesoftware.openfire.security.SecurityAuditManager;
 import org.jivesoftware.openfire.session.ConnectionSettings;
 import org.jivesoftware.openfire.session.RemoteSessionLocator;
 import org.jivesoftware.openfire.session.SoftwareServerVersionManager;
@@ -67,19 +64,23 @@ import org.jivesoftware.openfire.transport.TransportHandler;
 import org.jivesoftware.openfire.update.UpdateManager;
 import org.jivesoftware.openfire.user.User;
 import org.jivesoftware.openfire.user.UserManager;
+import org.jivesoftware.openfire.vcard.xep0398.UserAvatarToVCardConvertor;
 import org.jivesoftware.openfire.vcard.VCardManager;
 import org.jivesoftware.util.*;
 import org.jivesoftware.util.cache.CacheFactory;
+import org.jivesoftware.util.cert.CertificateExpiryChecker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.Message;
 
+import javax.annotation.Nonnull;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -130,7 +131,6 @@ public class XMPPServer {
     private boolean initialized = false;
     private boolean started = false;
     private NodeID nodeID;
-    private static final NodeID DEFAULT_NODE_ID = NodeID.getInstance( UUID.randomUUID().toString().getBytes() );
 
     private Timer terminatorTimer;
     public static final String EXIT = "exit";
@@ -140,7 +140,7 @@ public class XMPPServer {
             // Admin console network settings
             "adminConsole.port", "adminConsole.securePort", "adminConsole.interface", "network.interface",
             // Misc. settings
-            "locale", "fqdn", "setup", ClusterManager.CLUSTER_PROPERTY_NAME,
+            "locale", "fqdn", "setup", ClusterManager.CLUSTER_PROPERTY_NAME, ClusterManager.NODEID_PROPERTY_NAME,
             // Database config
             "connectionProvider.className",
             "database.defaultProvider.driver", "database.defaultProvider.serverURL", "database.defaultProvider.username",
@@ -158,7 +158,7 @@ public class XMPPServer {
     /**
      * All modules loaded by this server
      */
-    private Map<Class, Module> modules = new LinkedHashMap<>();
+    private Map<Class<Module>, Module> modules = new LinkedHashMap<>();
 
     /**
      * Listeners that will be notified when the server has started or is about to be stopped.
@@ -261,35 +261,34 @@ public class XMPPServer {
     }
 
     /**
-     * Returns an ID that uniquely identifies this server in a cluster. When not running in cluster mode
-     * the returned value is always the same. However, when in cluster mode the value should be set
-     * when joining the cluster and must be unique even upon restarts of this node.
+     * Returns an ID that uniquely identifies this server in a cluster.
      *
      * @return an ID that uniquely identifies this server in a cluster.
      */
+    @Nonnull
     public NodeID getNodeID() {
-        return nodeID == null ? DEFAULT_NODE_ID : nodeID;
+        if (nodeID == null) {
+            throw new IllegalStateException("Not initialized yet.");
+        }
+        return nodeID;
     }
 
     /**
-     * Sets an ID that uniquely identifies this server in a cluster. When not running in cluster mode
-     * the returned value is always the same. However, when in cluster mode the value should be set
-     * when joining the cluster and must be unique even upon restarts of this node.
+     * Sets an ID that uniquely identifies this server in a cluster.
      *
-     * @param nodeID an ID that uniquely identifies this server in a cluster or null if not in a cluster.
+     * @param nodeID an ID that uniquely identifies this server in a cluster.
      */
-    public void setNodeID(NodeID nodeID) {
-        this.nodeID = nodeID;
+    public void setNodeID(@Nonnull final NodeID nodeID) {
+        this.nodeID = Objects.requireNonNull(nodeID, "nodeID argument cannot be null");
     }
 
     /**
-     * Returns the default node ID used by this server before clustering is
-     * initialized.
-     *
-     * @return The default node ID.
+     * @return The node ID.
+     * @deprecated use {@link #getNodeID()} instead. In versions of Openfire prior to 4.4.0, the cluster node identifier of a server was changed when a server joined a cluster. That's no longer the case: a cluster node now has a static identifier. As such, it's no longer needed to distinguish between the 'default' nodeID (which was used when no cluster was joined) and the cluster node ID.
      */
+    @Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0.
     public NodeID getDefaultNodeID() {
-        return DEFAULT_NODE_ID;
+        return getNodeID();
     }
 
     /**
@@ -427,6 +426,8 @@ public class XMPPServer {
             JiveGlobals.setXMLProperty("fqdn", hostname);
             JiveGlobals.deleteProperty("xmpp.fqdn");
         }
+
+        initClusterNodeID();
     }
 
     void runAutoSetup() {
@@ -481,7 +482,7 @@ public class XMPPServer {
 
         // steps from index.jsp
         String localeCode = JiveGlobals.getXMLProperty("autosetup.locale");
-        logger.warn("Setting locale to " + localeCode);
+        logger.info("Setting locale to {}", localeCode);
         JiveGlobals.setLocale(LocaleUtils.localeCodeToLocale(localeCode.trim()));
 
         // steps from setup-host-settings.jsp
@@ -495,38 +496,29 @@ public class XMPPServer {
 
         // steps from setup-profile-settings.jsp
         if ("default".equals(JiveGlobals.getXMLProperty("autosetup.authprovider.mode", "default"))) {
-            JiveGlobals.setProperty(AuthFactory.AUTH_PROVIDER.getKey(), JiveGlobals.getXMLProperty(AuthFactory.AUTH_PROVIDER.getKey(),
-                AuthFactory.AUTH_PROVIDER.getDefaultValue().getName()));
-            JiveGlobals.setProperty(UserManager.USER_PROVIDER.getKey(), JiveGlobals.getXMLProperty(UserManager.USER_PROVIDER.getKey(),
-                UserManager.USER_PROVIDER.getDefaultValue().getName()));
-            JiveGlobals.setProperty(GroupManager.GROUP_PROVIDER.getKey(), JiveGlobals.getXMLProperty(GroupManager.GROUP_PROVIDER.getKey(),
-                GroupManager.GROUP_PROVIDER.getDefaultValue().getName()));
-            JiveGlobals.setProperty(VCardManager.VCARD_PROVIDER.getKey(), JiveGlobals.getXMLProperty(VCardManager.VCARD_PROVIDER.getKey(),
-                VCardManager.VCARD_PROVIDER.getDefaultValue().getName()));
-            JiveGlobals.setProperty(LockOutManager.LOCKOUT_PROVIDER.getKey(), JiveGlobals.getXMLProperty(LockOutManager.LOCKOUT_PROVIDER.getKey(),
-                LockOutManager.LOCKOUT_PROVIDER.getDefaultValue().getName()));
-            JiveGlobals.setProperty(SecurityAuditManager.AUDIT_PROVIDER.getKey(), JiveGlobals.getXMLProperty(SecurityAuditManager.AUDIT_PROVIDER.getKey(),
-                SecurityAuditManager.AUDIT_PROVIDER.getDefaultValue().getName()));
-            JiveGlobals.setProperty(AdminManager.ADMIN_PROVIDER.getKey(), JiveGlobals.getXMLProperty(AdminManager.ADMIN_PROVIDER.getKey(),
-                AdminManager.ADMIN_PROVIDER.getDefaultValue().getName()));
-
             // make configurable?
             JiveGlobals.setProperty("user.scramHashedPasswordOnly", "true");
         }
 
-        // steps from setup-admin-settings.jsp
-        try {
-            User adminUser = UserManager.getInstance().getUser("admin");
-            adminUser.setPassword(JiveGlobals.getXMLProperty("autosetup.admin.password"));
-            adminUser.setEmail(JiveGlobals.getXMLProperty("autosetup.admin.email"));
-            Date now = new Date();
-            adminUser.setCreationDate(now);
-            adminUser.setModificationDate(now);
-        } catch (Exception e) {
-            e.printStackTrace();
-            logger.warn("There was an unexpected error encountered when "
-                + "setting the new admin information. Please check your error "
-                + "logs and try to remedy the problem.");
+        // steps from setup-admin-settings.jsp: change attributes of the default admin user
+        if (JiveGlobals.getXMLProperty("autosetup.admin.password") != null || JiveGlobals.getXMLProperty("autosetup.admin.email") != null) {
+            try {
+                User adminUser = UserManager.getInstance().getUser("admin");
+                if (JiveGlobals.getXMLProperty("autosetup.admin.password") != null) {
+                    adminUser.setPassword(JiveGlobals.getXMLProperty("autosetup.admin.password"));
+                }
+                if (JiveGlobals.getXMLProperty("autosetup.admin.email") != null) {
+                    adminUser.setEmail(JiveGlobals.getXMLProperty("autosetup.admin.email"));
+                }
+                Date now = new Date();
+                adminUser.setCreationDate(now);
+                adminUser.setModificationDate(now);
+            } catch (Exception e) {
+                e.printStackTrace();
+                logger.warn("There was an unexpected error encountered when "
+                    + "setting the new admin information. Please check your error "
+                    + "logs and try to remedy the problem.");
+            }
         }
 
         // Import any provisioned users.
@@ -565,6 +557,20 @@ public class XMPPServer {
         // finish setup
         this.finalSetupSteps();
         setupMode = false;
+    }
+
+    /**
+     * Initialize the (supposedly unique) identifier of this server in a cluster of servers.
+     */
+    private void initClusterNodeID()
+    {
+        final String staticNodeID = JiveGlobals.getXMLProperty(ClusterManager.NODEID_PROPERTY_NAME);
+        if (staticNodeID != null && !staticNodeID.isEmpty()) {
+            nodeID = NodeID.getInstance(staticNodeID.getBytes(StandardCharsets.UTF_8));
+        } else {
+            nodeID = NodeID.getInstance( UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8) );
+            JiveGlobals.setXMLProperty(ClusterManager.NODEID_PROPERTY_NAME, nodeID.toString());
+        }
     }
 
     private void finalSetupSteps() {
@@ -617,38 +623,35 @@ public class XMPPServer {
             // Iterate through all the provided XML properties and set the ones that haven't
             // already been touched by setup prior to this method being called.
 
-            Thread finishSetup = new Thread() {
-                @Override
-                public void run() {
-                    try {
-                        if (isStandAlone()) {
-                            // Always restart the HTTP server manager. This covers the case
-                            // of changing the ports, as well as generating self-signed certificates.
-                        
-                            // Wait a short period before shutting down the admin console.
-                            // Otherwise, the page that requested the setup finish won't
-                            // render properly!
-                            Thread.sleep(1000);
-                            ((AdminConsolePlugin) pluginManager.getPlugin("admin")).restart();
-                        }
+            Thread finishSetup = new Thread(() -> {
+                try {
+                    if (isStandAlone()) {
+                        // Always restart the HTTP server manager. This covers the case
+                        // of changing the ports, as well as generating self-signed certificates.
 
-                        verifyDataSource();
-                        // First load all the modules so that modules may access other modules while
-                        // being initialized
-                        loadModules();
-                        // Initize all the modules
-                        initModules();
-                        // Start all the modules
-                        startModules();
-                        scanForSystemPropertyClasses();
+                        // Wait a short period before shutting down the admin console.
+                        // Otherwise, the page that requested the setup finish won't
+                        // render properly!
+                        Thread.sleep(1000);
+                        pluginManager.getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restart());
                     }
-                    catch (Exception e) {
-                        e.printStackTrace();
-                        logger.error(e.getMessage(), e);
-                        shutdownServer();
-                    }
+
+                    verifyDataSource();
+                    // First load all the modules so that modules may access other modules while
+                    // being initialized
+                    loadModules();
+                    // Initize all the modules
+                    initModules();
+                    // Start all the modules
+                    startModules();
+                    scanForSystemPropertyClasses();
                 }
-            };
+                catch (Exception e) {
+                    e.printStackTrace();
+                    logger.error(e.getMessage(), e);
+                    shutdownServer();
+                }
+            });
             // Use the correct class loader.
             finishSetup.setContextClassLoader(loader);
             finishSetup.start();
@@ -805,6 +808,8 @@ public class XMPPServer {
         loadModule(EntityCapabilitiesManager.class.getName());
         loadModule(SoftwareVersionManager.class.getName());
         loadModule(SoftwareServerVersionManager.class.getName());
+        loadModule(CertificateExpiryChecker.class.getName());
+        loadModule(UserAvatarToVCardConvertor.class.getName());
 
         // Load this module always last since we don't want to start listening for clients
         // before the rest of the modules have been started
@@ -919,24 +924,21 @@ public class XMPPServer {
      * restart to fully render its content.
      */
     public void restartHTTPServer() {
-        Thread restartThread = new Thread() {
-            @Override
-            public void run() {
-                if (isStandAlone()) {
-                    // Restart the HTTP server manager. This covers the case
-                    // of changing the ports, as well as generating self-signed certificates.
+        Thread restartThread = new Thread(() -> {
+            if (isStandAlone()) {
+                // Restart the HTTP server manager. This covers the case
+                // of changing the ports, as well as generating self-signed certificates.
 
-                    // Wait a short period before shutting down the admin console.
-                    // Otherwise, this page won't render properly!
-                    try {
-                        Thread.sleep(1000);
-                        ((AdminConsolePlugin) pluginManager.getPlugin("admin")).restart();
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
+                // Wait a short period before shutting down the admin console.
+                // Otherwise, this page won't render properly!
+                try {
+                    Thread.sleep(1000);
+                    pluginManager.getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restart());
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
             }
-        };
+        });
         restartThread.setContextClassLoader(loader);
         restartThread.start();
     }
@@ -1260,16 +1262,14 @@ public class XMPPServer {
         // This ensures that the 'most important' / core modules are shut down last, giving other modules the
         // opportunity to make use of their functionality during their shutdown (eg: MUC wants to send messages during
         // shutdown).
-        final List<Class> reverseInsertionOrder = new ArrayList<>( modules.keySet() );
+        final List<Class<Module>> reverseInsertionOrder = new ArrayList<>( modules.keySet() );
         Collections.reverse( reverseInsertionOrder );
 
-        for( final Class moduleClass : reverseInsertionOrder ) {
+        for( final Class<Module> moduleClass : reverseInsertionOrder ) {
             final Module module = modules.get( moduleClass );
             try {
                 // OF-1607: Apply a configurable timeout to the duration of stop/destroy invocation.
-                timeLimiter.runWithTimeout(() -> {
-                    stopAndDestroyModule(module);
-                }, JiveGlobals.getLongProperty("shutdown.modules.timeout-millis", Long.MAX_VALUE), TimeUnit.MILLISECONDS);
+                timeLimiter.runWithTimeout(() -> stopAndDestroyModule(module), JiveGlobals.getLongProperty("shutdown.modules.timeout-millis", Long.MAX_VALUE), TimeUnit.MILLISECONDS);
             } catch ( Exception e ) {
                 logger.warn("An exception occurred while stopping / destroying module '{}'.", module.getName(), e);
                 System.err.println(e);
@@ -1736,6 +1736,29 @@ public class XMPPServer {
     public CertificateStoreManager getCertificateStoreManager() {
         return (CertificateStoreManager) modules.get( CertificateStoreManager.class );
     }
+
+    /**
+     * Returns the <code>CertificateExpiryChecker</code> registered with this server. The
+     * <code>CertificateExpiryChecker</code> was registered with the server as a module while starting up
+     * the server.
+     *
+     * @return the <code>CertificateExpiryChecker</code> registered with this server.
+     */
+    public CertificateExpiryChecker getCertificateExpiryChecker() {
+        return (CertificateExpiryChecker) modules.get(CertificateExpiryChecker.class);
+    }
+
+    /**
+     * Returns the <code>UserAvatarToVCardConvertor</code> registered with this server. The
+     * <code>UserAvatarToVCardConvertor</code> was registered with the server as a module while starting up
+     * the server.
+     *
+     * @return the <code>UserAvatarToVCardConvertor</code> registered with this server.
+     */
+    public UserAvatarToVCardConvertor getUserAvatarToVCardConvertor() {
+        return (UserAvatarToVCardConvertor) modules.get(UserAvatarToVCardConvertor.class);
+    }
+
     /**
      * Returns the locator to use to find sessions hosted in other cluster nodes. When not running
      * in a cluster a {@code null} value is returned.

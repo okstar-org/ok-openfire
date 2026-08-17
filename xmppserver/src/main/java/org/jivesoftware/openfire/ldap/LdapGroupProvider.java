@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import org.jivesoftware.openfire.group.Group;
 import org.jivesoftware.openfire.group.GroupNotFoundException;
 import org.jivesoftware.openfire.user.UserManager;
 import org.jivesoftware.openfire.user.UserNotFoundException;
+import org.jivesoftware.util.SystemProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.JID;
@@ -44,8 +45,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.jivesoftware.util.SystemProperty;
-
 /**
  * LDAP implementation of the GroupProvider interface.  All data in the directory is treated as
  * read-only so any set operations will result in an exception.
@@ -54,7 +53,7 @@ import org.jivesoftware.util.SystemProperty;
  */
 public class LdapGroupProvider extends AbstractGroupProvider {
 
-    private static final Logger Log = LoggerFactory.getLogger(LdapGroupProvider.class);
+    private final Logger Log;
 
     private LdapManager manager;
     private UserManager userManager;
@@ -72,8 +71,15 @@ public class LdapGroupProvider extends AbstractGroupProvider {
      * Constructs a new LDAP group provider.
      */
     public LdapGroupProvider() {
+        this(null);
+    }
+
+    public LdapGroupProvider(String ldapConfigPropertyName)
+    {
         super();
-        manager = LdapManager.getInstance();
+        Log = LoggerFactory.getLogger(LdapGroupProvider.class.getName() + (ldapConfigPropertyName == null ? "" : ( "[" + ldapConfigPropertyName + "]" )));
+
+        manager = LdapManager.getInstance(ldapConfigPropertyName);
         userManager = UserManager.getInstance();
         standardAttributes = new String[3];
         standardAttributes[0] = manager.getGroupNameField();
@@ -88,7 +94,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
             return getGroupByDN(groupDN, new HashSet<>(Collections.singleton(groupDN.toString())));
         }
         catch (Exception e) {
-            Log.error("Unable to load group: {}", groupName, e);
+            Log.debug("Unable to load group: {}", groupName, e);
             throw new GroupNotFoundException("Group with name " + groupName + " not found.", e);
         }
     }
@@ -170,7 +176,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
                 else
                 {
                     //retrieve first part with attributes that came from AD
-                    ArrayList<String> stdAttr=new ArrayList<String>();
+                    ArrayList<String> stdAttr= new ArrayList<>();
                     for (int n=0;n<standardAttributes.length;n++)
                     {
                         if (!standardAttributes[n].contains(manager.getGroupMemberField()))
@@ -237,7 +243,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
                             Log.debug("next range will be {}-{}",oldrangehigh,rangehigh!=-1?rangehigh:"*");
     
                             tmpGroup=processGroup(ctx, attrs, membersToIgnore);
-                            if (tmpGroup!=null&&tmpGroup.getMembers().size()>0)
+                            if (tmpGroup!=null&& !tmpGroup.getMembers().isEmpty())
                             {
                                 members.addAll(tmpGroup.getMembers());
                             }
@@ -250,7 +256,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
                         }
                         catch (Exception e)
                         {
-                            Log.debug("error while reading the ldap group with range retrival",e); // no next found, cause of missing attribute
+                            Log.debug("error while reading the ldap group with range retrieval",e); // no next found, cause of missing attribute
                             break;
                         }
                     }while (rangehigh!=-1);  //The last part was received
@@ -325,7 +331,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
                 username = relativePart + "," + manager.getUsersBaseDN(username);
             }
             catch (Exception e) {
-                Log.error("Could not find user in LDAP " + username);
+                Log.debug("Unable to find groups for a user that was not recognized in LDAP: {}", username);
                 return Collections.emptyList();
             }
         }
@@ -333,7 +339,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
             username = server.isLocal(user) ? JID.unescapeNode(user.getNode()) : user.toBareJID();
         }
         // Do nothing if the user is empty or null
-        if (username == null || "".equals(username)) {
+        if (username == null || username.isEmpty()) {
             return Collections.emptyList();
         }
 
@@ -434,7 +440,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
 
     @Override
     public Collection<String> search(String query, int startIndex, int numResults) {
-        if (query == null || "".equals(query)) {
+        if (query == null || query.isEmpty()) {
             return Collections.emptyList();
         }
         StringBuilder filter = new StringBuilder();
@@ -517,7 +523,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
         }
 
         if (memberField != null) {
-            NamingEnumeration ne = memberField.getAll();
+            NamingEnumeration<?> ne = memberField.getAll();
             while (ne.hasMore()) {
                 String username = (String) ne.next();
                 LdapName userDN = null;
@@ -545,14 +551,14 @@ public class LdapGroupProvider extends AbstractGroupProvider {
                             userFilter.append(')');
                             userFilter.append(MessageFormat.format(manager.getSearchFilter(), "*"));
                             userFilter.append(')');
-                            NamingEnumeration usrAnswer = ctx.search("",
+                            NamingEnumeration<SearchResult> usrAnswer = ctx.search("",
                                     userFilter.toString(), searchControls);
                             if (usrAnswer.hasMoreElements()) {
                                 SearchResult searchResult = null;
                                 // We may get multiple search results for the same user CN.
                                 // Iterate through the entire set to find a matching distinguished name.
                                 while(usrAnswer.hasMoreElements()) {
-                                    searchResult = (SearchResult) usrAnswer.nextElement();
+                                    searchResult = usrAnswer.nextElement();
                                     Attributes attrs = searchResult.getAttributes();
                                     if (isAD) {
                                         Attribute userdnAttr = attrs.get("distinguishedName");
@@ -574,8 +580,7 @@ public class LdapGroupProvider extends AbstractGroupProvider {
                         }
                     }
                     catch (Exception e) {
-                        // TODO: A NPE is occuring here
-                        Log.error(e.getMessage(), e);
+                        Log.error("An unexpected exception occurred while processing an LDAP group {}, while iterating over user {}", name, username, e);
                     }
                 }
                 // A search filter may have been defined in the LdapUserProvider.

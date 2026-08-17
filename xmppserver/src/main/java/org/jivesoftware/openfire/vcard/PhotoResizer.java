@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -79,16 +79,23 @@ public class PhotoResizer
 
         // Get a writer (check if we can generate a new image for the type of the original).
         final String type = vCardElement.element( "PHOTO" ).element( "TYPE" ).getTextTrim();
-        final Iterator it = ImageIO.getImageWritersByMIMEType( type );
+        final Iterator<ImageWriter> it = ImageIO.getImageWritersByMIMEType( type );
         if ( !it.hasNext() )
         {
             Log.debug( "Cannot resize avatar. No writers available for MIME type {}.", type );
             return;
         }
-        final ImageWriter iw = (ImageWriter) it.next();
+        final ImageWriter iw = it.next();
 
         // Extract the original avatar from the VCard.
-        final byte[] original = Base64.getDecoder().decode( element.getTextTrim() );
+        final byte[] original;
+        try {
+            final String value = element.getTextTrim().replaceAll("\\s",""); // OF-3112: Ignore all whitespace in Base64 encoded data.
+            original = Base64.getDecoder().decode(value);
+        } catch (IllegalArgumentException ex) {
+            Log.warn( "Failed to resize avatar. An unexpected exception occurred while trying to decode the original Base64-encoded image data.", ex );
+            return;
+        }
 
         // Crop and shrink, if needed.
         final int targetDimension = JiveGlobals.getIntProperty( PROPERTY_TARGETDIMENSION, PROPERTY_TARGETDIMENSION_DEFAULT );

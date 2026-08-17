@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,6 +48,9 @@ import java.util.*;
 
 import javax.net.ssl.X509TrustManager;
 
+import org.jivesoftware.openfire.XMPPServer;
+import org.jivesoftware.openfire.spi.ConnectionListener;
+import org.jivesoftware.openfire.spi.ConnectionType;
 import org.jivesoftware.util.CertificateManager;
 import org.jivesoftware.util.JiveGlobals;
 import org.slf4j.Logger;
@@ -62,7 +65,9 @@ import org.slf4j.LoggerFactory;
  *
  * @author Gaston Dombiak
  * @author Jay Kline
+ * @deprecated Replaced by org.jivesoftware.openfire.keystore.OpenfireX509TrustManager
  */
+@Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0
 public class ClientTrustManager implements X509TrustManager {
 
     private static final Logger Log = LoggerFactory.getLogger(ClientTrustManager.class);
@@ -170,6 +175,8 @@ public class ClientTrustManager implements X509TrustManager {
 
         loadCRL();
 
+        final ConnectionListener connectionListener = XMPPServer.getInstance().getConnectionManager().getListener(ConnectionType.SOCKET_C2S, false);
+
         boolean verify = JiveGlobals.getBooleanProperty("xmpp.client.certificate.verify", true);
         if (verify) {
             int nSize = x509Certificates.length;
@@ -207,7 +214,7 @@ public class ClientTrustManager implements X509TrustManager {
             }
 
             if (JiveGlobals.getBooleanProperty("xmpp.client.certificate.verify.root", true)) {
-                // Verify that the the last certificate in the chain was issued
+                // Verify that the last certificate in the chain was issued
                 // by a third-party that the client trusts, or is trusted itself
                 boolean trusted = false;
                 try {
@@ -251,7 +258,7 @@ public class ClientTrustManager implements X509TrustManager {
                 }
             }
 
-            if (JiveGlobals.getBooleanProperty("xmpp.client.certificate.verify.validity", true)) {
+            if (connectionListener.verifyCertificateValidity()) {
                 // For every certificate in the chain, verify that the certificate
                 // is valid at the current time.
                 Date date = new Date();
@@ -335,7 +342,8 @@ public class ClientTrustManager implements X509TrustManager {
 
     @Override
     public X509Certificate[] getAcceptedIssuers() {
-        if (JiveGlobals.getBooleanProperty("xmpp.client.certificate.accept-selfsigned", false)) {
+        final ConnectionListener connectionListener = XMPPServer.getInstance().getConnectionManager().getListener(ConnectionType.SOCKET_C2S, false);
+        if (connectionListener.acceptSelfSignedCertificates()) {
             // Answer an empty list since we accept any issuer
             return new X509Certificate[0];
         }
@@ -350,7 +358,7 @@ public class ClientTrustManager implements X509TrustManager {
                     X509Certs = new X509Certificate[numberOfEntry];
 
                     // Get all of the certificate alias out of the keystore.
-                    Enumeration aliases = trustStore.aliases();
+                    Enumeration<String> aliases = trustStore.aliases();
 
                     // Retrieve all of the certificates out of the keystore
                     // via the alias name.
@@ -358,7 +366,7 @@ public class ClientTrustManager implements X509TrustManager {
                     while (aliases.hasMoreElements()) {
                         X509Certs[i] =
                                 (X509Certificate) trustStore.
-                                        getCertificate((String) aliases.nextElement());
+                                        getCertificate(aliases.nextElement());
                         i++;
                     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,37 +16,34 @@
 
 package org.jivesoftware.openfire.container;
 
-import org.apache.jasper.servlet.JasperInitializer;
+import org.eclipse.jetty.ee8.webapp.WebAppContext;
 import org.apache.tomcat.InstanceManager;
 import org.apache.tomcat.SimpleInstanceManager;
-import org.eclipse.jetty.annotations.AnnotationConfiguration;
 import org.eclipse.jetty.http.HttpHeader;
-import org.eclipse.jetty.plus.annotation.ContainerInitializer;
-import org.eclipse.jetty.plus.webapp.EnvConfiguration;
-import org.eclipse.jetty.plus.webapp.PlusConfiguration;
 import org.eclipse.jetty.server.*;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.DefaultHandler;
-import org.eclipse.jetty.server.handler.HandlerCollection;
-import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.server.Handler.Sequence;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.eclipse.jetty.webapp.*;
 import org.jivesoftware.admin.AdminContentSecurityPolicyFilter;
 import org.jivesoftware.openfire.ConnectionManager;
 import org.jivesoftware.admin.AuthCheckFilter;
 import org.jivesoftware.openfire.JMXManager;
 import org.jivesoftware.openfire.XMPPServer;
-import org.jivesoftware.openfire.http.HttpBindContentSecurityPolicyFilter;
 import org.jivesoftware.openfire.keystore.CertificateStore;
 import org.jivesoftware.openfire.keystore.IdentityStore;
 import org.jivesoftware.openfire.spi.ConnectionConfiguration;
 import org.jivesoftware.openfire.spi.ConnectionType;
 import org.jivesoftware.openfire.spi.EncryptionArtifactFactory;
 import org.jivesoftware.util.*;
+import org.jivesoftware.util.jetty.TrustedForwardedRequestCustomizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.temporal.ChronoUnit;
+import java.util.*;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
@@ -54,10 +51,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.TimerTask;
 
 /**
  * The admin console plugin. It starts a Jetty instance on the configured
@@ -70,13 +63,34 @@ public class AdminConsolePlugin implements Plugin {
     private static final Logger Log = LoggerFactory.getLogger(AdminConsolePlugin.class);
 
     /**
+     * Duration of the maximum duration of gracefully stopping the embedded webserver that is hosting the admin console.
+     */
+    public static final SystemProperty<Duration> ADMIN_CONSOLE_STOP_TIMEOUT = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("adminConsole.stop-timeout")
+        .setChronoUnit(ChronoUnit.MILLIS)
+        .setDynamic(true)
+        .setDefaultValue(Duration.ofSeconds(5))
+        .addListener(stopTimeout -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).adminServer.setStopTimeout(stopTimeout == null || stopTimeout.isNegative() ? 0 : stopTimeout.toMillis())))
+        .build();
+
+    /**
      * Enable / Disable parsing a 'X-Forwarded-For' style HTTP header of HTTP requests.
      */
     public static final SystemProperty<Boolean> ADMIN_CONSOLE_FORWARDED = SystemProperty.Builder.ofType(Boolean.class)
         .setKey("adminConsole.forwarded.enabled")
         .setDynamic(false)
         .setDefaultValue(false)
-        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .addListener(enabled -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
+        .build();
+
+    /**
+     * The HTTP header name for 'forwarded' (per RFC 7239).
+     */
+    public static final SystemProperty<String> ADMIN_CONSOLE_FORWARDED_HEADER = SystemProperty.Builder.ofType(String.class)
+        .setKey("adminConsole.forwarded.header")
+        .setDynamic(false)
+        .setDefaultValue(HttpHeader.FORWARDED.toString())
+        .addListener(enabled -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
         .build();
 
     /**
@@ -86,7 +100,7 @@ public class AdminConsolePlugin implements Plugin {
         .setKey("adminConsole.forwarded.for.header")
         .setDynamic(false)
         .setDefaultValue(HttpHeader.X_FORWARDED_FOR.toString())
-        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .addListener(header -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
         .build();
 
     /**
@@ -96,7 +110,7 @@ public class AdminConsolePlugin implements Plugin {
         .setKey("adminConsole.forwarded.server.header")
         .setDynamic(false)
         .setDefaultValue(HttpHeader.X_FORWARDED_SERVER.toString())
-        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .addListener(header -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
         .build();
 
     /**
@@ -106,7 +120,7 @@ public class AdminConsolePlugin implements Plugin {
         .setKey("adminConsole.forwarded.host.header")
         .setDynamic(false)
         .setDefaultValue(HttpHeader.X_FORWARDED_HOST.toString())
-        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .addListener(header -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
         .build();
 
     /**
@@ -116,8 +130,30 @@ public class AdminConsolePlugin implements Plugin {
         .setKey("adminConsole.forwarded.host.name")
         .setDynamic(false)
         .setDefaultValue(null)
-        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .addListener(name -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
         .build();
+
+    /**
+     * Defines the set of trusted reverse proxies.
+     *
+     * When this property is configured (non-empty), 'Forwarded' and 'X-Forwarded-*' HTTP headers are only honored if
+     * the direct peer (the socket-level remote address) of the request matches one of the configured trusted proxies.
+     * If the peer is not trusted, these headers are ignored and the request's original remote address is used instead.
+     *
+     * This setting helps prevent spoofing of client IP addresses via forged forwarding headers and should be configured
+     * when the admin console is deployed behind one or more reverse proxies.
+     *
+     * Values can be individual IP addresses (IPv4 or IPv6) as well as IP ranges (for example, in CIDR notation).
+     *
+     * @see org.jivesoftware.openfire.http.HttpBindManager#HTTP_BIND_FORWARDED_TRUSTED_PROXIES for a similar configuration in the web-binding client endpoints.
+     */
+    public static final SystemProperty<Set<String>> ADMIN_CONSOLE_FORWARDED_TRUSTED_PROXIES = SystemProperty.Builder.ofType(Set.class)
+        .setKey("adminConsole.forwarded.trusted.proxies")
+        .setDynamic(false)
+        .setDefaultValue(new HashSet<>())
+        .setSorted(true)
+        .addListener(proxies -> XMPPServer.getInstance().getPluginManager().getPluginByCanonicalName("admin").ifPresent(plugin -> ((AdminConsolePlugin) plugin).restartNeeded = true))
+        .buildSet(String.class);
 
     /**
      * Enable / Disable adding a 'Content-Security-Policy' HTTP header to the response to requests made against the admin console.
@@ -189,6 +225,9 @@ public class AdminConsolePlugin implements Plugin {
             JMXManager jmx = JMXManager.getInstance();
             adminServer.addBean(jmx.getContainer());
         }
+
+        final Duration stopTimeout = ADMIN_CONSOLE_STOP_TIMEOUT.getValue();
+        adminServer.setStopTimeout(stopTimeout == null || stopTimeout.isNegative() ? 0 : stopTimeout.toMillis());
 
         // Create connector for http traffic if it's enabled.
         if (adminPort > 0) {
@@ -263,7 +302,7 @@ public class AdminConsolePlugin implements Plugin {
 
         createWebAppContext();
 
-        HandlerCollection collection = new HandlerCollection();
+        Sequence collection = new Sequence();
         adminServer.setHandler(collection);
         collection.setHandlers(new Handler[]{contexts, new DefaultHandler()});
 
@@ -274,9 +313,13 @@ public class AdminConsolePlugin implements Plugin {
             throw new RuntimeException(e);
         }
 
-        if (XMPPServer.getInstance().isSetupMode()) {
-            AuthCheckFilter.loadSetupExcludes();
-        }
+            if (XMPPServer.getInstance().isSetupMode()) {
+                AuthCheckFilter.loadSetupExcludes();
+            } else {
+                // Explicitly remove setup-only excludes. If the admin console is restarting
+                // after setup completion, destroy() no longer clears them automatically.
+                Arrays.stream(JiveGlobals.setupExcludePaths).forEach(AuthCheckFilter::removeExclude);
+            }
 
         // Log the ports that the admin server is listening on.
         logAdminConsolePorts();
@@ -395,6 +438,11 @@ public class AdminConsolePlugin implements Plugin {
         // Refer to http://eclipse.org/jetty/documentation/current/configuring-connectors.html
         if (ADMIN_CONSOLE_FORWARDED.getValue()) {
             ForwardedRequestCustomizer customizer = new ForwardedRequestCustomizer();
+            // default: "Forwarded"
+            String forwardedHeader = ADMIN_CONSOLE_FORWARDED_HEADER.getValue();
+            if (forwardedHeader != null) {
+                customizer.setForwardedHeader(forwardedHeader);
+            }
             // default: "X-Forwarded-For"
             String forwardedForHeader = ADMIN_CONSOLE_FORWARDED_FOR.getValue();
             if (forwardedForHeader != null) {
@@ -416,7 +464,14 @@ public class AdminConsolePlugin implements Plugin {
                 customizer.setHostHeader(hostName);
             }
 
-            httpConfig.addCustomizer(customizer);
+            final HttpConfiguration.Customizer possiblyWrappedCustomizer;
+            final Set<String> trustedProxies = ADMIN_CONSOLE_FORWARDED_TRUSTED_PROXIES.getValue();
+            if (trustedProxies != null && !trustedProxies.isEmpty()) {
+                possiblyWrappedCustomizer = new TrustedForwardedRequestCustomizer(customizer, trustedProxies);
+            } else {
+                possiblyWrappedCustomizer = customizer;
+            }
+            httpConfig.addCustomizer(possiblyWrappedCustomizer);
         }
     }
 
@@ -431,9 +486,10 @@ public class AdminConsolePlugin implements Plugin {
         String adminInterfaceName = JiveGlobals.getXMLProperty("adminConsole.interface");
         String globalInterfaceName = JiveGlobals.getXMLProperty("network.interface");
         String bindInterface = null;
-        if (adminInterfaceName != null && adminInterfaceName.trim().length() > 0) {
+        if (adminInterfaceName != null && !adminInterfaceName.trim().isEmpty()) {
             bindInterface = adminInterfaceName;
-        } else if (globalInterfaceName != null && globalInterfaceName.trim().length() > 0) {
+        }
+        else if (globalInterfaceName != null && !globalInterfaceName.trim().isEmpty()) {
             bindInterface = globalInterfaceName;
         }
         return bindInterface;
@@ -467,7 +523,8 @@ public class AdminConsolePlugin implements Plugin {
      * process. The following pseudo code demonstrates how to do this:
      *
      * <pre>
-     *   ContextHandlerCollection contexts = ((AdminConsolePlugin)pluginManager.getPlugin("admin")).getContexts();
+     *   AdminConsolePlugin plugin = ((AdminConsolePlugin) pluginManager.getPluginByCanonicalName("admin").orElseThrow())
+     *   ContextHandlerCollection contexts = plugin.getContexts();
      *   context = new WebAppContext(SOME_DIRECTORY, "/CONTEXT_NAME");
      *   contexts.addHandler(context);
      *   context.setWelcomeFiles(new String[]{"index.jsp"});
@@ -481,7 +538,7 @@ public class AdminConsolePlugin implements Plugin {
     }
 
     /**
-     * Restart the admin console (and it's HTTP server) without restarting the plugin.
+     * Restart the admin console (and its HTTP server) without restarting the plugin.
      */
     public void restart() {
         try {
@@ -498,25 +555,12 @@ public class AdminConsolePlugin implements Plugin {
 
         WebAppContext context = new WebAppContext(contexts, pluginDir.getAbsoluteFile() + File.separator + "webapp", "/");
 
-        // Ensure the JSP engine is initialized correctly (in order to be able to cope with Tomcat/Jasper precompiled JSPs).
-        final List<ContainerInitializer> initializers = new ArrayList<>();
-        initializers.add(new ContainerInitializer(new JasperInitializer(), null));
-        context.setAttribute("org.eclipse.jetty.containerInitializers", initializers);
         context.setInitParameter("org.eclipse.jetty.servlet.Default.dirAllowed", "false");
         context.setClassLoader(Thread.currentThread().getContextClassLoader());
         context.setAttribute(InstanceManager.class.getName(), new SimpleInstanceManager());
-        context.setConfigurations(new Configuration[]{
-            new AnnotationConfiguration(),
-            new WebInfConfiguration(),
-            new WebXmlConfiguration(),
-            new MetaInfConfiguration(),
-            new FragmentConfiguration(),
-            new EnvConfiguration(),
-            new PlusConfiguration(),
-            new JettyWebXmlConfiguration()
-        });
         final URL classes = getClass().getProtectionDomain().getCodeSource().getLocation();
-        context.getMetaData().setWebInfClassesResources(Collections.singletonList(Resource.newResource(classes)));
+        final ResourceFactory resourceFactory = ResourceFactory.of(context);
+        context.getMetaData().setWebInfClassesResources(Collections.singletonList(resourceFactory.newResource(classes)));
 
         // Add CSP headers for all HTTP responses (errors, etc.)
         context.addFilter(AdminContentSecurityPolicyFilter.class, "/*", null);

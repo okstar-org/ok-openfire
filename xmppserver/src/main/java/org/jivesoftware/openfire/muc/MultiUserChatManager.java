@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,10 +32,7 @@ import org.jivesoftware.openfire.muc.spi.MultiUserChatServiceImpl;
 import org.jivesoftware.openfire.stats.Statistic;
 import org.jivesoftware.openfire.stats.StatisticsManager;
 import org.jivesoftware.openfire.user.User;
-import org.jivesoftware.util.AlreadyExistsException;
-import org.jivesoftware.util.JiveConstants;
-import org.jivesoftware.util.LocaleUtils;
-import org.jivesoftware.util.NotFoundException;
+import org.jivesoftware.util.*;
 import org.jivesoftware.util.cache.CacheFactory;
 import org.jivesoftware.util.cache.ConsistencyChecks;
 import org.slf4j.Logger;
@@ -47,10 +44,7 @@ import org.xmpp.packet.JID;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -64,23 +58,46 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
 
     private static final Logger Log = LoggerFactory.getLogger(MultiUserChatManager.class);
 
-    private static final String LOAD_SERVICES = "SELECT subdomain,description,isHidden FROM ofMucService";
-    private static final String LOAD_SERVICE = "SELECT description,isHidden FROM ofMucService WHERE subdomain =?";
+    /**
+     * A secret that is shared with all MUC services in the Openfire cluster. This value should never be changed after it has initially been generated.
+     */
+    public static final SystemProperty<String> MASTER_KEY = SystemProperty.Builder.ofType(String.class)
+        .setKey("xmpp.muc.masterkey")
+        .setDynamic(true)
+        .setEncrypted(true)
+        .build();
+
+    private static final String LOAD_SERVICES = "SELECT serviceID,subdomain,description,isHidden FROM ofMucService";
+    private static final String LOAD_SERVICE = "SELECT serviceID,description,isHidden FROM ofMucService WHERE subdomain =?";
     private static final String CREATE_SERVICE = "INSERT INTO ofMucService(serviceID,subdomain,description,isHidden) VALUES(?,?,?,?)";
     private static final String UPDATE_SERVICE = "UPDATE ofMucService SET subdomain=?,description=? WHERE serviceID=?";
     private static final String DELETE_SERVICE = "DELETE FROM ofMucService WHERE serviceID=?";
-    private static final String LOAD_SERVICE_ID = "SELECT serviceID FROM ofMucService WHERE subdomain=?";
-    private static final String LOAD_SUBDOMAIN = "SELECT subdomain FROM ofMucService WHERE serviceID=?";
+    private static final String GET_RETIREES = "SELECT serviceID, name, alternateJID, reason, retiredAt FROM ofMucRoomRetiree WHERE serviceID = ? ORDER BY name ASC";
+    private static final String DELETE_RETIREE = "DELETE FROM ofMucRoomRetiree WHERE serviceID=? AND name=?";
+    private static final String COUNT_RETIREE = "SELECT COUNT(name) FROM ofMucRoomRetiree WHERE serviceID = ?";
 
     /**
      * Statistics keys
      */
-    private static final String roomsStatKey = "muc_rooms";
-    private static final String occupantsStatKey = "muc_occupants";
-    private static final String usersStatKey = "muc_users";
-    private static final String incomingStatKey = "muc_incoming";
-    private static final String outgoingStatKey = "muc_outgoing";
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
+    private static final String roomsCountStatKey = "muc_rooms";
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
+    private static final String occupantsCountStatKey = "muc_occupants";
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
+    private static final String usersCountStatKey = "muc_users";
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
+    private static final String incomingRateStatKey = "muc_incoming";
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
+    private static final String outgoingRateStatKey = "muc_outgoing";
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0.
     private static final String trafficStatGroup = "muc_traffic";
+
+    private static final String roomsAmountStatKey = "muc_rooms_amt";
+    private static final String occupantsAmountStatKey = "muc_occupants_amt";
+    private static final String usersAmountStatKey = "muc_users_amt";
+    private static final String incomingAmountStatKey = "muc_incoming_amt";
+    private static final String outgoingAmountStatKey = "muc_outgoing_amt";
+    private static final String trafficAmountStatGroup = "muc_traffic_amt";
 
     private final ConcurrentHashMap<String,MultiUserChatService> mucServices = new ConcurrentHashMap<>();
 
@@ -89,6 +106,17 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
      */
     public MultiUserChatManager() {
         super("Multi user chat manager");
+    }
+
+    @Override
+    public void initialize(XMPPServer server)
+    {
+        super.initialize(server);
+
+        // OF-2607: Generate a site-wide secret. This should be generated only once, and never change.
+        if (MASTER_KEY.getValue() == null) {
+            MASTER_KEY.setValue(StringUtils.randomString(97));
+        }
     }
 
     /**
@@ -126,11 +154,16 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
         MUCServicePropertyEventDispatcher.removeListener(this);
 
         // Remove the statistics.
-        StatisticsManager.getInstance().removeStatistic(roomsStatKey);
-        StatisticsManager.getInstance().removeStatistic(occupantsStatKey);
-        StatisticsManager.getInstance().removeStatistic(usersStatKey);
-        StatisticsManager.getInstance().removeStatistic(incomingStatKey);
-        StatisticsManager.getInstance().removeStatistic(outgoingStatKey);
+        StatisticsManager.getInstance().removeStatistic(roomsCountStatKey);
+        StatisticsManager.getInstance().removeStatistic(roomsAmountStatKey);
+        StatisticsManager.getInstance().removeStatistic(occupantsCountStatKey);
+        StatisticsManager.getInstance().removeStatistic(occupantsAmountStatKey);
+        StatisticsManager.getInstance().removeStatistic(usersCountStatKey);
+        StatisticsManager.getInstance().removeStatistic(usersAmountStatKey);
+        StatisticsManager.getInstance().removeStatistic(incomingRateStatKey);
+        StatisticsManager.getInstance().removeStatistic(incomingAmountStatKey);
+        StatisticsManager.getInstance().removeStatistic(outgoingRateStatKey);
+        StatisticsManager.getInstance().removeStatistic(outgoingAmountStatKey);
 
         for (MultiUserChatService service : mucServices.values()) {
             unregisterMultiUserChatService(service.getServiceName(), false);
@@ -176,16 +209,22 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
      */
     public void registerMultiUserChatService(@Nonnull final MultiUserChatService service, final boolean allNodes) {
         Log.debug("Registering MUC service '{}'", service.getServiceName());
+        mucServices.put(service.getServiceName(), service);
         try {
             ComponentManagerFactory.getComponentManager().addComponent(service.getServiceName(), service);
-            mucServices.put(service.getServiceName(), service);
         }
         catch (ComponentException e) {
             Log.error("Unable to register MUC service '{}' as a component.", service.getServiceName(), e);
+            mucServices.remove(service.getServiceName());
+            return;
         }
         if (allNodes) {
-            Log.trace("Sending 'service added' event for MUC service '{}' to all other cluster nodes.", service.getServiceName());
-            CacheFactory.doClusterTask(new ServiceAddedEvent(service.getServiceName(), service.getDescription(), service.isHidden()));
+            if (service instanceof MultiUserChatServiceImpl) {
+                Log.trace("Sending 'service added' event for MUC service '{}' to all other cluster nodes.", service.getServiceName());
+                CacheFactory.doClusterTask(new ServiceAddedEvent(((MultiUserChatServiceImpl)service).getServiceID(), service.getServiceName(), service.getDescription(), service.isHidden()));
+            } else {
+                Log.warn("Custom MUCService implementation detected for for MUC service '{}'. Unable to send 'service added' event to all other cluster nodes.", service.getServiceName());
+            }
         }
     }
 
@@ -277,8 +316,12 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
         }
 
         Log.info("Creating MUC service '{}'", subdomain);
-        final MultiUserChatServiceImpl muc = new MultiUserChatServiceImpl(subdomain, description, isHidden);
-        insertService(subdomain, description, isHidden);
+
+        // Check subdomain and throw an IllegalArgumentException if it's invalid
+        new JID(null,subdomain + "." + XMPPServer.getInstance().getServerInfo().getXMPPDomain(), null);
+
+        final long serviceID = insertService(subdomain, description, isHidden);
+        final MultiUserChatServiceImpl muc = new MultiUserChatServiceImpl(serviceID, subdomain, description, isHidden);
         registerMultiUserChatService(muc);
         return muc;
     }
@@ -321,7 +364,7 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             CacheFactory.doSynchronousClusterTask(new ServiceUpdatedEvent(subdomain), false);
         }
         else {
-            // Changing the subdomain, here's where it   gets complex.
+            // Changing the subdomain, here's where it gets complex.
 
             // Unregister existing muc service
             unregisterMultiUserChatService(subdomain, false);
@@ -330,13 +373,13 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             updateService(serviceID, subdomain, description);
 
             // Create new MUC service with new settings
-            final MultiUserChatService replacement = new MultiUserChatServiceImpl(subdomain, description, muc.isHidden());
+            final MultiUserChatService replacement = new MultiUserChatServiceImpl(serviceID, subdomain, description, muc.isHidden());
 
             // Register to new service
             registerMultiUserChatService(replacement, false);
 
             // Broadcast change(s) to other cluster nodes (OF-2164)
-            CacheFactory.doSynchronousClusterTask(new ServiceAddedEvent(subdomain, description, muc.isHidden()), false);
+            CacheFactory.doSynchronousClusterTask(new ServiceAddedEvent(serviceID, subdomain, description, muc.isHidden()), false);
             CacheFactory.doSynchronousClusterTask(new ServiceRemovedEvent(oldSubdomain), false);
         }
     }
@@ -399,7 +442,7 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
     }
 
     /**
-     * Retrieves a MultiUserChatService instance specified by it's service ID.
+     * Retrieves a MultiUserChatService instance specified by its service ID.
      *
      * @param serviceID ID of the conference service you wish to query.
      * @return The MultiUserChatService instance associated with the id, or null if none found.
@@ -481,8 +524,13 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
      * @param subdomain Subdomain of service to get ID of.
      * @return ID number of MUC service, or null if none found.
      */
-    public Long getMultiUserChatServiceID(@Nonnull final String subdomain) {
-        return loadServiceID(subdomain);
+    public Long getMultiUserChatServiceID(@Nonnull final String subdomain)
+    {
+        final MultiUserChatService multiUserChatService = mucServices.get(subdomain);
+        if (multiUserChatService instanceof MultiUserChatServiceImpl service) {
+            return service.getServiceID();
+        }
+        return null;
     }
 
     /**
@@ -493,7 +541,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
      */
     @Nullable
     public String getMultiUserChatSubdomain(final long serviceID) {
-        return loadServiceSubdomain(serviceID);
+        return mucServices.values().stream()
+            .filter(mucService -> mucService instanceof MultiUserChatServiceImpl impl && impl.getServiceID() == serviceID)
+            .map(MultiUserChatService::getServiceName)
+            .findAny()
+            .orElse(null);
     }
 
     /**
@@ -512,10 +564,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             pstmt = con.prepareStatement(LOAD_SERVICES);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                String subdomain = rs.getString(1);
-                String description = rs.getString(2);
-                Boolean isHidden = Boolean.valueOf(rs.getString(3));
-                final MultiUserChatServiceImpl muc = new MultiUserChatServiceImpl(subdomain, description, isHidden);
+                long serviceID = rs.getLong(1);
+                String subdomain = rs.getString(2);
+                String description = rs.getString(3);
+                Boolean isHidden = Boolean.valueOf(rs.getString(4));
+                final MultiUserChatServiceImpl muc = new MultiUserChatServiceImpl(serviceID, subdomain, description, isHidden);
 
                 Log.trace("... loaded '{}' MUC service from the database.", subdomain);
                 mucServices.put(subdomain, muc);
@@ -530,16 +583,19 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
     }
 
     /**
-     * Updates the in-memory representation of a previously loaded services from the database.
+     * Updates the in-memory representation of a previously loaded service from the database.
      *
      * This call will modify database-stored characteristics for a service previously loaded to memory on the local
-     * cluster node. An exception will be thrown if used for a service that's not in memory.
+     * cluster node. An exception will be thrown if used for a service not in memory.
      *
      * Note that this method will not cause MUCServiceProperties to be reloaded. It only operates on fields like the
      * service description.
      *
      * This method is primarily useful to cause a service to reload its state from the database after it was changed on
      * another cluster node.
+     *
+     * This method is <em>not used</em> to update the serviceID or subdomain of a service. If those changed, a removal
+     * and an addition instead of an update would be invoked.
      *
      * @param subdomain the domain of the service to refresh
      */
@@ -557,8 +613,8 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             pstmt.setString(1, subdomain);
             rs = pstmt.executeQuery();
             if (rs.next()) {
-                String description = rs.getString(1);
-                Boolean isHidden = Boolean.valueOf(rs.getString(2));
+                String description = rs.getString(2);
+                Boolean isHidden = Boolean.valueOf(rs.getString(3));
                 ((MultiUserChatServiceImpl)mucServices.get(subdomain)).setDescription(description);
                 ((MultiUserChatServiceImpl)mucServices.get(subdomain)).setHidden(isHidden);
             }
@@ -576,78 +632,14 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
     }
 
     /**
-     * Gets a specific subdomain/service's ID number.
-     *
-     * @param subdomain Subdomain to retrieve ID for.
-     * @return ID number of service, or null if no such service was found
-     */
-    @Nullable
-    private Long loadServiceID(@Nonnull final String subdomain) {
-        Connection con = null;
-        PreparedStatement pstmt = null;
-        ResultSet rs = null;
-        Long id = null;
-        try {
-            con = DbConnectionManager.getConnection();
-            pstmt = con.prepareStatement(LOAD_SERVICE_ID);
-            pstmt.setString(1, subdomain);
-            rs = pstmt.executeQuery();
-            if (rs.next()) {
-                id = rs.getLong(1);
-            }
-            else {
-                throw new Exception("Unable to locate Service ID for subdomain "+subdomain);
-            }
-        }
-        catch (Exception e) {
-            Log.error("A database exception occurred while trying to load the ID for MUC service '{}' from the database.", subdomain, e);
-        }
-        finally {
-            DbConnectionManager.closeConnection(rs, pstmt, con);
-        }
-        Log.trace("Loaded service ID for MUC service '{}'", subdomain);
-        return id;
-    }
-
-    /**
-     * Gets a specific subdomain by a service's ID number.
-     *
-     * @param serviceID ID to retrieve subdomain for.
-     * @return Subdomain of service, or null if no such service was found.
-     */
-    @Nullable
-    private String loadServiceSubdomain(final long serviceID) {
-        Connection con = null;
-        PreparedStatement pstmt = null;
-        ResultSet rs = null;
-        String subdomain = null;
-        try {
-            con = DbConnectionManager.getConnection();
-            pstmt = con.prepareStatement(LOAD_SUBDOMAIN);
-            pstmt.setLong(1, serviceID);
-            rs = pstmt.executeQuery();
-            if (rs.next()) {
-                subdomain = rs.getString(1);
-            }
-        }
-        catch (Exception e) {
-            Log.error("A database exception occurred while trying to load the subdomain for MUC service with database ID {} from the database.", serviceID, e);
-        }
-        finally {
-            DbConnectionManager.closeConnection(rs, pstmt, con);
-        }
-        Log.trace("Loaded service name for service with ID {}", serviceID);
-        return subdomain;
-    }
-
-    /**
      * Inserts a new MUC service into the database.
      *
      * @param subdomain Subdomain of new service.
      * @param description Description of MUC service. Can be null for default description.
      * @param isHidden True if the service should be hidden from service listing.
+     * @return Database ID of the newly inserted service.
      */
-    private void insertService(@Nonnull final String subdomain, @Nullable final String description, final boolean isHidden) {
+    private long insertService(@Nonnull final String subdomain, @Nullable final String description, final boolean isHidden) {
         Connection con = null;
         PreparedStatement pstmt = null;
         final long serviceID = SequenceManager.nextID(JiveConstants.MUC_SERVICE);
@@ -672,6 +664,7 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
         finally {
             DbConnectionManager.closeConnection(pstmt, con);
         }
+        return serviceID;
     }
 
     /**
@@ -731,8 +724,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
 
     /****************** Statistics code ************************/
     private void addTotalRoomStats() {
-        // Register a statistic.
-        final Statistic statistic = new Statistic() {
+        /*
+         * Replaced by 'statisticAmount' (see below) because of issue OF-3142.
+         */
+        @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
+        final Statistic statisticCount = new Statistic() {
             @Override
             public String getName() {
                 return LocaleUtils.getLocalizedString("muc.stats.active_group_chats.name");
@@ -741,6 +737,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             @Override
             public Type getStatType() {
                 return Type.count;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.SNAPSHOT;
             }
 
             @Override
@@ -767,12 +768,58 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
                 return false;
             }
         };
-        StatisticsManager.getInstance().addStatistic(roomsStatKey, statistic);
+        StatisticsManager.getInstance().addStatistic(roomsCountStatKey, statisticCount);
+
+        final Statistic statisticAmount = new Statistic() {
+            @Override
+            public String getName() {
+                return LocaleUtils.getLocalizedString("muc.stats.active_group_chats.name");
+            }
+
+            @Override
+            public Type getStatType() {
+                return Type.amount;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.SNAPSHOT;
+            }
+
+            @Override
+            public String getDescription() {
+                return LocaleUtils.getLocalizedString("muc.stats.active_group_chats.desc");
+            }
+
+            @Override
+            public String getUnits() {
+                return LocaleUtils.getLocalizedString("muc.stats.active_group_chats.units");
+            }
+
+            @Override
+            public double sample() {
+                double rooms = 0;
+                for (MultiUserChatService service : getMultiUserChatServices()) {
+                    rooms += service.getNumberChatRooms();
+                }
+                return rooms;
+            }
+
+            @Override
+            public boolean isPartialSample() {
+                return false;
+            }
+        };
+        StatisticsManager.getInstance().addStatistic(roomsAmountStatKey, statisticAmount);
+
     }
 
     private void addTotalOccupantsStats() {
-        // Register a statistic.
-        final Statistic statistic = new Statistic() {
+        /*
+         * Replaced by 'statisticAmount' (see below) because of issue OF-3142.
+         */
+        @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
+        final Statistic statisticCount = new Statistic() {
             @Override
             public String getName() {
                 return LocaleUtils.getLocalizedString("muc.stats.occupants.name");
@@ -781,6 +828,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             @Override
             public Type getStatType() {
                 return Type.count;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.SNAPSHOT;
             }
 
             @Override
@@ -807,12 +859,57 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
                 return false;
             }
         };
-        StatisticsManager.getInstance().addStatistic(occupantsStatKey, statistic);
+        StatisticsManager.getInstance().addStatistic(occupantsCountStatKey, statisticCount);
+
+        final Statistic statisticAmount = new Statistic() {
+            @Override
+            public String getName() {
+                return LocaleUtils.getLocalizedString("muc.stats.occupants.name");
+            }
+
+            @Override
+            public Type getStatType() {
+                return Type.amount;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.SNAPSHOT;
+            }
+
+            @Override
+            public String getDescription() {
+                return LocaleUtils.getLocalizedString("muc.stats.occupants.description");
+            }
+
+            @Override
+            public String getUnits() {
+                return LocaleUtils.getLocalizedString("muc.stats.occupants.label");
+            }
+
+            @Override
+            public double sample() {
+                double occupants = 0;
+                for (MultiUserChatService service : getMultiUserChatServices()) {
+                    occupants += service.getNumberRoomOccupants();
+                }
+                return occupants;
+            }
+
+            @Override
+            public boolean isPartialSample() {
+                return false;
+            }
+        };
+        StatisticsManager.getInstance().addStatistic(occupantsAmountStatKey, statisticAmount);
     }
 
     private void addTotalConnectedUsers() {
-        // Register a statistic.
-        final Statistic statistic = new Statistic() {
+        /*
+         * Replaced by 'statisticAmount' (see below) because of issue OF-3142.
+         */
+        @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
+        final Statistic statisticCount = new Statistic() {
             @Override
             public String getName() {
                 return LocaleUtils.getLocalizedString("muc.stats.users.name");
@@ -821,6 +918,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             @Override
             public Type getStatType() {
                 return Type.count;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.SNAPSHOT;
             }
 
             @Override
@@ -847,12 +949,57 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
                 return false;
             }
         };
-        StatisticsManager.getInstance().addStatistic(usersStatKey, statistic);
+        StatisticsManager.getInstance().addStatistic(usersCountStatKey, statisticCount);
+
+        final Statistic statisticAmount = new Statistic() {
+            @Override
+            public String getName() {
+                return LocaleUtils.getLocalizedString("muc.stats.users.name");
+            }
+
+            @Override
+            public Type getStatType() {
+                return Type.amount;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.SNAPSHOT;
+            }
+
+            @Override
+            public String getDescription() {
+                return LocaleUtils.getLocalizedString("muc.stats.users.description");
+            }
+
+            @Override
+            public String getUnits() {
+                return LocaleUtils.getLocalizedString("muc.stats.users.label");
+            }
+
+            @Override
+            public double sample() {
+                double users = 0;
+                for (MultiUserChatService service : getMultiUserChatServices()) {
+                    users += service.getNumberConnectedUsers();
+                }
+                return users;
+            }
+
+            @Override
+            public boolean isPartialSample() {
+                return false;
+            }
+        };
+        StatisticsManager.getInstance().addStatistic(usersAmountStatKey, statisticAmount);
     }
 
     private void addNumberIncomingMessages() {
-        // Register a statistic.
-        final Statistic statistic = new Statistic() {
+        /*
+         * Replaced by 'statisticAmount' (see below) because of issue OF-3142.
+         */
+        @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
+        final Statistic statisticRate = new Statistic() {
             @Override
             public String getName() {
                 return LocaleUtils.getLocalizedString("muc.stats.incoming.name");
@@ -861,6 +1008,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             @Override
             public Type getStatType() {
                 return Type.rate;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.RATE;
             }
 
             @Override
@@ -888,12 +1040,58 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
                 return true;
             }
         };
-        StatisticsManager.getInstance().addMultiStatistic(incomingStatKey, trafficStatGroup, statistic);
+        StatisticsManager.getInstance().addMultiStatistic(incomingRateStatKey, trafficStatGroup, statisticRate);
+
+        final Statistic statisticAmount = new Statistic() {
+            @Override
+            public String getName() {
+                return LocaleUtils.getLocalizedString("muc.stats.incoming.amount.name");
+            }
+
+            @Override
+            public Type getStatType() {
+                return Type.amount;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.RATE;
+            }
+
+            @Override
+            public String getDescription() {
+                return LocaleUtils.getLocalizedString("muc.stats.incoming.amount.description");
+            }
+
+            @Override
+            public String getUnits() {
+                return LocaleUtils.getLocalizedString("muc.stats.incoming.amount.label");
+            }
+
+            @Override
+            public double sample() {
+                double msgcnt = 0;
+                for (MultiUserChatService service : getMultiUserChatServices()) {
+                    msgcnt += service.getIncomingMessageCount();
+                }
+                return msgcnt;
+            }
+
+            @Override
+            public boolean isPartialSample() {
+                // Get this value from the other cluster nodes
+                return true;
+            }
+        };
+        StatisticsManager.getInstance().addMultiStatistic(incomingAmountStatKey, trafficAmountStatGroup, statisticAmount);
     }
 
     private void addNumberOutgoingMessages() {
-        // Register a statistic.
-        final Statistic statistic = new Statistic() {
+        /*
+         * Replaced by 'statisticAmount' (see below) because of issue OF-3142.
+         */
+        @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
+        final Statistic statisticRate = new Statistic() {
             @Override
             public String getName() {
                 return LocaleUtils.getLocalizedString("muc.stats.outgoing.name");
@@ -902,6 +1100,11 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
             @Override
             public Type getStatType() {
                 return Type.rate;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.RATE;
             }
 
             @Override
@@ -929,7 +1132,50 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
                 return false;
             }
         };
-        StatisticsManager.getInstance().addMultiStatistic(outgoingStatKey, trafficStatGroup, statistic);
+        StatisticsManager.getInstance().addMultiStatistic(outgoingRateStatKey, trafficStatGroup, statisticRate);
+
+        final Statistic statisticAmount = new Statistic() {
+            @Override
+            public String getName() {
+                return LocaleUtils.getLocalizedString("muc.stats.outgoing.amount.name");
+            }
+
+            @Override
+            public Type getStatType() {
+                return Type.amount;
+            }
+
+            @Override
+            public RepresentationSemantics getRepresentationSemantics() {
+                return RepresentationSemantics.RATE;
+            }
+
+            @Override
+            public String getDescription() {
+                return LocaleUtils.getLocalizedString("muc.stats.outgoing.amount.description");
+            }
+
+            @Override
+            public String getUnits() {
+                return LocaleUtils.getLocalizedString("muc.stats.outgoing.amount.label");
+            }
+
+            @Override
+            public double sample() {
+                double msgcnt = 0;
+                for (MultiUserChatService service : getMultiUserChatServices()) {
+                    msgcnt += service.getOutgoingMessageCount();
+                }
+                return msgcnt;
+            }
+
+            @Override
+            public boolean isPartialSample() {
+                // Each cluster node knows the total across the cluster
+                return false;
+            }
+        };
+        StatisticsManager.getInstance().addMultiStatistic(outgoingAmountStatKey, trafficAmountStatGroup, statisticAmount);
     }
 
     @Override
@@ -991,4 +1237,129 @@ public class MultiUserChatManager extends BasicModule implements MUCServicePrope
                 mucService.getServiceName()
             )).collect(Collectors.toList());
     }
+
+    /**
+     * Gets the number of MUC room retirees.
+     *
+     * @return the number of MUC room retirees.
+     */
+    public int getRetireeCount(String mucServiceName) {
+        Long serviceID = getMultiUserChatServiceID(mucServiceName);
+
+        Connection con = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        int count = 0;
+        try {
+            con = DbConnectionManager.getConnection();
+            pstmt = con.prepareStatement(COUNT_RETIREE);
+            pstmt.setLong(1, serviceID);
+            rs = pstmt.executeQuery();
+            if (rs.next()) {
+                count = rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            Log.error("An unexpected exception occurred while trying to count the number of MUC room retirees for serviceID '{}'", serviceID , e);
+        } finally {
+            DbConnectionManager.closeConnection(rs, pstmt, con);
+        }
+        return count;
+    }
+
+
+    /**
+     * Gets the retirees for a MUC service.
+     *
+     * @param mucServiceName the name of the MUC service.
+     * @param startIndex the index of the first result to return.
+     * @param numResults the maximum number of results to return.
+     * @return a collection of MUCRoomRetiree objects.
+     */
+    public Collection<MUCRoomRetiree> getRetirees(String mucServiceName, int startIndex, int numResults) {
+
+        Long serviceID = getMultiUserChatServiceID(mucServiceName);
+        List<MUCRoomRetiree> retirees = new ArrayList<>();
+        Connection con = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+
+        try {
+            con = DbConnectionManager.getConnection();
+
+            if ((startIndex == 0) && (numResults == Integer.MAX_VALUE)) {
+                // MSSQL differentiates between client-cursored and server-cursored result sets. For server-cursored result
+                // sets, the fetch buffer and scroll window are the same size (as opposed to fetch buffer containing all
+                // the rows). To hint that a server-cursored result set is desired, it should be configured to be 'forward
+                // only' as well as 'read only'.
+                pstmt = con.prepareStatement(GET_RETIREES, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+                pstmt.setLong(1, serviceID);
+                // Set the fetch size. This will prevent some JDBC drivers from trying
+                // to load the entire result set into memory.
+                DbConnectionManager.setFetchSize(pstmt, 500);
+                pstmt.setFetchDirection(ResultSet.FETCH_FORWARD);
+                rs = pstmt.executeQuery();
+                while (rs.next()) {
+                    retirees.add(new MUCRoomRetiree(
+                        rs.getString("name"),
+                        rs.getString("alternateJID"),
+                        rs.getString("reason"),
+                        rs.getTimestamp("retiredAt")
+                    ));
+                }
+            } else {
+                pstmt = DbConnectionManager.createScrollablePreparedStatement(con, GET_RETIREES);
+                pstmt.setLong(1, serviceID);
+                // This handles the paging at the database level
+                DbConnectionManager.limitRowsAndFetchSize(pstmt, startIndex, numResults);
+                rs = pstmt.executeQuery();
+                // This positions the cursor at the start of the requested page
+                DbConnectionManager.scrollResultSet(rs, startIndex);
+                int count = 0;
+                while (rs.next() && count < numResults) {
+                    retirees.add(new MUCRoomRetiree(
+                        rs.getString("name"),
+                        rs.getString("alternateJID"),
+                        rs.getString("reason"),
+                        rs.getTimestamp("retiredAt")
+                    ));
+                    count++;
+                }
+            }
+
+            if (Log.isDebugEnabled()) {
+                Log.debug("Retired rooms found: {}", retirees.size());
+            }
+        } catch (SQLException e) {
+            Log.error(e.getMessage(), e);
+        } finally {
+            DbConnectionManager.closeConnection(rs, pstmt, con);
+        }
+
+        return retirees;
+    }
+
+    /**
+     * Deletes a retiree for a MUC room.
+     *
+     * @param mucServiceName the name of the MUC service.
+     * @param retireeName the name of the retired room.
+     */
+    public void deleteRetiree(String mucServiceName, String retireeName) {
+        Long serviceID = getMultiUserChatServiceID(mucServiceName);
+        Connection con = null;
+        PreparedStatement pstmt = null;
+
+        try {
+            con = DbConnectionManager.getConnection();
+            pstmt = con.prepareStatement(DELETE_RETIREE);
+            pstmt.setLong(1, serviceID);
+            pstmt.setString(2, retireeName);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            Log.error(e.getMessage(), e);
+        } finally {
+            DbConnectionManager.closeConnection(pstmt, con);
+        }
+    }
+
 }

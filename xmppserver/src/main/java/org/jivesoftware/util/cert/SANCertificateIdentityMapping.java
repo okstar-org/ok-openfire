@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,30 +86,24 @@ public class SANCertificateIdentityMapping implements CertificateIdentityMapping
             {
                 return Collections.emptyList();
             }
+
+            // OF-3159: Limit the number of SubjectAltNames to prevent abuse through resource exhaustion.
+            altNames = altNames.stream().limit(1024).toList();
+
             for ( List<?> item : altNames )
             {
                 final Integer type = (Integer) item.get( 0 );
                 final Object value = item.get( 1 ); // this is either a string, or a byte-array that represents the ASN.1 DER encoded form.
-                final String result;
-                switch ( type )
-                {
-                    case 0:
-                        // OtherName: search for "id-on-xmppAddr" or 'sRVName' or 'userPrincipalName'
-                        result = parseOtherName( (byte[]) value );
-                        break;
-                    case 2:
-                        // DNS
-                        result = (String) value;
-                        break;
-                    case 6:
-                        // URI
-                        result = (String) value;
-                        break;
-                    default:
-                        // Not applicable to XMPP, so silently ignore them
-                        result = null;
-                        break;
-                }
+                final String result = switch (type) {
+                    case 0 -> // OtherName: search for "id-on-xmppAddr" or 'sRVName' or 'userPrincipalName'
+                        parseOtherName((byte[]) value);
+                    case 2 -> // DNS
+                        (String) value;
+                    case 6 -> // URI
+                        (String) value;
+                    default -> // Not applicable to XMPP, so silently ignore them
+                        null;
+                };
 
                 if ( result != null )
                 {
@@ -157,8 +151,13 @@ public class SANCertificateIdentityMapping implements CertificateIdentityMapping
 
         try ( final ASN1InputStream decoder = new ASN1InputStream( item ) )
         {
+            ASN1Primitive object = decoder.readObject();
+            if (object instanceof DLTaggedObject) {
+                final DLTaggedObject taggedObject = (DLTaggedObject) object;
+                object = (ASN1Sequence) taggedObject.getBaseObject();
+            }
+
             // By specification, OtherName instances must always be an ASN.1 Sequence.
-            final ASN1Primitive object = decoder.readObject();
             final ASN1Sequence otherNameSeq = (ASN1Sequence) object;
 
             // By specification, an OtherName instance consists of:

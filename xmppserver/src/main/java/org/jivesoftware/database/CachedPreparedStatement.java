@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import org.slf4j.LoggerFactory;
  * Allows PreparedStatement information to be cached. A prepared statement consists of
  * a SQL statement containing bind variables as well as variable values. For example,
  * the SQL statement {@code "SELECT * FROM person WHERE age &gt; ?"} would have the integer
- * variable {@code 18} (which replaces the "?" chracter) to find all adults. This class
+ * variable {@code 18} (which replaces the "?" character) to find all adults. This class
  * encapsulates both the SQL string and bind variable values so that actual
  * PreparedStatement can be created from that information later.
  *
@@ -189,22 +189,13 @@ public class CachedPreparedStatement  {
             while (index > -1) {
                 Object param = params.get(count);
                 int type = types.get(count);
-                String val = null;
-
-                // Get param
-                switch(type) {
-                    case Types.INTEGER:
-                        val = "" + param;
-                        break;
-                    case Types.BIGINT:
-                        val = "" + param;
-                        break;
-                    case Types.VARCHAR:
-                        val =  '\'' + (String) param + '\'';
-                        break;
-                    case Types.BOOLEAN:
-                        val = "" + param;
-                }
+                String val = switch (type) {
+                    case Types.INTEGER -> "" + param;
+                    case Types.BIGINT  -> "" + param;
+                    case Types.VARCHAR -> '\'' + (String) param + '\'';
+                    case Types.BOOLEAN -> "" + param;
+                    default -> null;
+                };
 
                 toStringSql = toStringSql.substring(0, index) + val +
                         ((index == toStringSql.length() -1) ? "" : toStringSql.substring(index + 1));

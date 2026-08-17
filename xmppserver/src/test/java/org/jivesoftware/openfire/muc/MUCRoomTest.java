@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2021-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.xmpp.packet.JID;
+import org.xmpp.packet.Message;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -34,6 +35,7 @@ import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -79,24 +81,24 @@ public class MUCRoomTest {
     {
         // Setup test fixture.
 
-        final MUCRole roomSelfOccupant = new MUCRole();
+        final MUCOccupant roomSelfOccupant = new MUCOccupant();
         populateField(roomSelfOccupant, "roomJid", new JID("room-test-role-jid@example.org"));
-        populateField(roomSelfOccupant, "role", MUCRole.Role.visitor);
-        populateField(roomSelfOccupant, "affiliation", MUCRole.Affiliation.member);
+        populateField(roomSelfOccupant, "role", Role.visitor);
+        populateField(roomSelfOccupant, "affiliation", Affiliation.member);
         populateField(roomSelfOccupant, "occupantJID", new JID("room-test-jid@conference.example.org"));
 
-        final List<MUCRole> occupants = new ArrayList<>();
-        final MUCRole occupantA = new MUCRole();
-        populateField(occupantA, "roomJid", new JID("occupantA@example.org"));
-        populateField(occupantA, "role", MUCRole.Role.participant);
-        populateField(occupantA, "affiliation", MUCRole.Affiliation.member);
+        final List<MUCOccupant> occupants = new CopyOnWriteArrayList<>();
+        final MUCOccupant occupantA = new MUCOccupant();
+        populateField(occupantA, "roomJid", new JID("occupantA@example.org/Ψ+"));
+        populateField(occupantA, "role", Role.participant);
+        populateField(occupantA, "affiliation", Affiliation.member);
         populateField(occupantA, "occupantJID", new JID("room-test-jid@conference.example.org/occupantA"));
         occupants.add(occupantA);
 
-        final MUCRole occupantB = new MUCRole();
+        final MUCOccupant occupantB = new MUCOccupant();
         populateField(occupantB, "roomJid", new JID("occupantBA@example.org"));
-        populateField(occupantB, "role", MUCRole.Role.none);
-        populateField(occupantB, "affiliation", MUCRole.Affiliation.member);
+        populateField(occupantB, "role", Role.none);
+        populateField(occupantB, "affiliation", Affiliation.member);
         populateField(occupantB, "occupantJID", new JID("room-test-jid@conference.example.org/occupantB"));
         occupants.add(occupantB);
 
@@ -116,10 +118,10 @@ public class MUCRoomTest {
         outcasts.add(new JID("unit-test-outcast-1@example.com"));
         outcasts.add(new JID("unit-test-outcast-2@example.org"));
 
-        final List<MUCRole.Role> rolesToBroadcastPresence = new ArrayList<>();
-        rolesToBroadcastPresence.add(MUCRole.Role.visitor);
-        rolesToBroadcastPresence.add(MUCRole.Role.none);
-        rolesToBroadcastPresence.add(MUCRole.Role.moderator);
+        final List<Role> rolesToBroadcastPresence = new ArrayList<>();
+        rolesToBroadcastPresence.add(Role.visitor);
+        rolesToBroadcastPresence.add(Role.none);
+        rolesToBroadcastPresence.add(Role.moderator);
 
         final MUCRoom input = new MUCRoom(); // Set all fields to a non-default value, for a more specific test!
         populateField(input, "mucService", mockService);
@@ -156,7 +158,10 @@ public class MUCRoomTest {
         populateField(input, "fmucOutboundNode", new JID("fmuc-unit-test-node@example.com"));
         populateField(input, "fmucOutboundMode", FMUCMode.MasterMaster);
         populateField(input, "fmucInboundNodes", new HashSet<>(Arrays.asList(new JID("fmuc-inbound-z@example.org"), new JID("fmuc-inbound-y@example.org"))));
-        populateField(input, "subject", "test subject");
+        final Message subject = new Message();
+        subject.setSubject("test subject");
+        subject.setFrom(new JID("test-room-name", mockService.getServiceDomain(), "Juan"));
+        populateField(input, "subject", subject);
         populateField(input, "roomID", 325);
         populateField(input, "creationDate", Date.from(Instant.now().minus(Duration.ofHours(3252))));
         populateField(input, "modificationDate", Date.from(Instant.now().minus(Duration.ofSeconds(91))));
@@ -206,7 +211,7 @@ public class MUCRoomTest {
         assertEquals(input.canAnyoneDiscoverJID(), ((MUCRoom) result).canAnyoneDiscoverJID());
         assertEquals(input.canSendPrivateMessage(), ((MUCRoom) result).canSendPrivateMessage());
 
-        //assertEquals(input.getCachedSize(), ((MUCRole) result).getCachedSize());
+        //assertEquals(input.getCachedSize(), ((MUCOccupant) result).getCachedSize());
     }
 
     public static <E> void populateField(final E object, final String fieldName, final Object value) throws NoSuchFieldException, IllegalAccessException {

@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2021-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2021-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@
 <%@ page import="org.jivesoftware.openfire.XMPPServer" %>
 <%@ page import="java.util.concurrent.ConcurrentHashMap" %>
 <%@ page import="java.util.concurrent.ConcurrentMap" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -69,7 +70,7 @@
     final List<String> allRoomNames = new ArrayList<>(allRooms.keySet());
     Collections.sort(allRoomNames);
 
-    final Set<String> roomsInBothCaches = roomsClustered.keySet().stream().filter(jid -> roomsLocal.containsKey(jid)).collect(Collectors.toSet());
+    final Set<String> roomsInBothCaches = roomsClustered.keySet().stream().filter(roomsLocal::containsKey).collect(Collectors.toSet());
     final Set<String> roomsOnlyInClusteredCache = roomsClustered.keySet().stream().filter(jid -> !roomsLocal.containsKey(jid)).collect(Collectors.toSet());
     final Set<String> roomsOnlyInLocalCache = roomsLocal.keySet().stream().filter(jid -> !roomsClustered.containsKey(jid)).collect(Collectors.toSet());
 
@@ -113,7 +114,7 @@
 <head>
 <title><fmt:message key="muc.room_cache.title"/></title>
 <meta name="subPageID" content="muc-room-cache"/>
-<meta name="extraParams" content="<%= "mucName=" + URLEncoder.encode(mucName, "UTF-8") %>"/>
+<meta name="extraParams" content="<%= "mucName=" + URLEncoder.encode(mucName, StandardCharsets.UTF_8) %>"/>
 <meta name="helpPage" content="edit_idle_user_settings.html"/>
 </head>
 <body>

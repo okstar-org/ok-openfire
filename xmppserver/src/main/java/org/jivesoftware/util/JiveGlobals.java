@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +61,14 @@ public class JiveGlobals {
     private static final String ENCRYPTION_KEY_OLD = ENCRYPTED_PROPERTY_NAME_PREFIX + "key.old";
     private static final String ENCRYPTION_ALGORITHM_AES = "AES";
     private static final String ENCRYPTION_ALGORITHM_BLOWFISH = "Blowfish";
+    private static final String BLOWFISH_KDF = ENCRYPTED_PROPERTY_NAME_PREFIX + "blowfish.kdf";
+    private static final String BLOWFISH_SALT = ENCRYPTED_PROPERTY_NAME_PREFIX + "blowfish.salt";
+
+    /** Blowfish key derivation function using PBKDF2-HMAC-SHA512 */
+    public static final String BLOWFISH_KDF_PBKDF2 = "pbkdf2";
+
+    /** Blowfish key derivation function using legacy SHA1 (for backward compatibility) */
+    public static final String BLOWFISH_KDF_SHA1 = "sha1";
 
     /**
      * Location of the jiveHome directory. All configuration files should be
@@ -112,7 +120,7 @@ public class JiveGlobals {
                     country = localeArray[1];
                 }
                 // If no locale info is specified, return the system default Locale.
-                if (language.equals("") && country.equals("")) {
+                if (language.isEmpty() && country.isEmpty()) {
                     locale = Locale.getDefault();
                 }
                 else {
@@ -407,7 +415,7 @@ public class JiveGlobals {
     public static boolean getXMLProperty(String name, boolean defaultValue) {
         String value = getXMLProperty(name);
         if (value != null) {
-            return Boolean.valueOf(value);
+            return Boolean.parseBoolean(value);
         }
         return defaultValue;
     }
@@ -482,7 +490,7 @@ public class JiveGlobals {
      * @param parent the name of the parent property to return the children for.
      * @return all child property values for the given parent.
      */
-    public static List getXMLProperties(String parent) {
+    public static List<String> getXMLProperties(String parent) {
         if (openfireProperties == null) {
             loadOpenfireProperties();
         }
@@ -664,7 +672,7 @@ public class JiveGlobals {
      *      Otherwise {@code false} is returned.
      */
     public static boolean getBooleanProperty(String name) {
-        return Boolean.valueOf(getProperty(name));
+        return Boolean.parseBoolean(getProperty(name));
     }
 
     /**
@@ -682,7 +690,7 @@ public class JiveGlobals {
     public static boolean getBooleanProperty(String name, boolean defaultValue) {
         String value = getProperty(name);
         if (value != null) {
-            return Boolean.valueOf(value);
+            return Boolean.parseBoolean(value);
         }
         else {
             return defaultValue;
@@ -808,9 +816,10 @@ public class JiveGlobals {
      *
      * @param name the name of the property being set.
      * @param value the value of the property being set.
+     * @return the previous value of the property, or {@code null} if it didn't exist.
      */
-    public static void setProperty(String name, String value) {
-        setProperty(name, value, false);
+    public static String setProperty(String name, String value) {
+        return setProperty(name, value, false);
     }
 
     /**
@@ -820,15 +829,16 @@ public class JiveGlobals {
      * @param name the name of the property being set.
      * @param value the value of the property being set.
      * @param encrypt {@code true} to encrypt the property in the database, other {@code false}
+     * @return the previous value of the property, or {@code null} if it didn't exist.
      */
-    public static void setProperty(String name, String value, boolean encrypt) {
+    public static String setProperty(String name, String value, boolean encrypt) {
         if (properties == null) {
             if (isSetupMode()) {
-                return;
+                return null;
             }
             properties = JiveProperties.getInstance();
         }
-        properties.put(name, value, encrypt);
+        return properties.put(name, value, encrypt);
     }
 
     /**
@@ -850,14 +860,15 @@ public class JiveGlobals {
      *
      * @param name   the name of the property being set.
      * @param values the values of the property.
+     * @return the previous value of the property, or {@code null} if it didn't exist.
      */
-    public static void setProperty( String name, List<String> values )
+    public static List<String> setProperty(String name, List<String> values)
     {
         if ( properties == null )
         {
             if ( isSetupMode() )
             {
-                return;
+                return null;
             }
             properties = JiveProperties.getInstance();
         }
@@ -866,7 +877,7 @@ public class JiveGlobals {
         if ( existing != null && existing.equals( values ) )
         {
             // no change.
-            return;
+            return existing.isEmpty() ? null : existing;
         }
 
         properties.remove( name );
@@ -893,6 +904,7 @@ public class JiveGlobals {
             params.put("value", values);
             PropertyEventDispatcher.dispatchEvent(name, PropertyEventDispatcher.EventType.property_set, params);
         }
+        return existing == null || existing.isEmpty() ? null : existing;
     }
 
     /**
@@ -919,16 +931,18 @@ public class JiveGlobals {
      * does nothing. All children of the property will be deleted as well.
      *
      * @param name the name of the property to delete.
+     * @return the previous value associated with this property, or null if there was no property.
      */
-    public static void deleteProperty(String name) {
+    public static String deleteProperty(String name) {
         if (properties == null) {
             if (isSetupMode()) {
-                return;
+                return null;
             }
             properties = JiveProperties.getInstance();
         }
-        properties.remove(name);
+        final String removed = properties.remove(name);
         clearXMLPropertyEncryptionEntry(name);
+        return removed;
     }
 
     static void clearXMLPropertyEncryptionEntry(String name) {
@@ -1118,24 +1132,44 @@ public class JiveGlobals {
             // update encrypted properties
             updateEncryptionProperties(oldAlg, key);
         }
-        // Set the new key
-        securityProperties.setProperty(ENCRYPTION_KEY_CURRENT, new AesEncryptor().encrypt(key));
-        currentKey = key == "" ? null : key;
+        // Set the new key (obfuscated, not encrypted - the key just needs to be hidden from casual viewing)
+        securityProperties.setProperty(ENCRYPTION_KEY_CURRENT, new Obfuscator().obfuscate(key));
+        currentKey = "".equals(key) ? null : key;
         propertyEncryptorNew = getEncryptor(oldAlg, key);
         propertyEncryptor = propertyEncryptorNew;
     }
 
     /**
      * Get current encryptor key.
+     * The key is stored obfuscated (not encrypted) in security.xml.
+     * Obfuscator is used for backward compatibility - it can deobfuscate
+     * values that were previously encrypted with AesEncryptor using hardcoded IV.
      *
+     * @see Obfuscator
      */
     private static String getCurrentKey() {
-        String encryptedKey = securityProperties.getProperty(ENCRYPTION_KEY_CURRENT);
+        String obfuscatedKey = securityProperties.getProperty(ENCRYPTION_KEY_CURRENT);
         String key = null;
-        if (StringUtils.isNotEmpty(encryptedKey)) {
-            key = new AesEncryptor().decrypt(encryptedKey);
+        if (StringUtils.isNotEmpty(obfuscatedKey)) {
+            key = new Obfuscator().deobfuscate(obfuscatedKey);
         }
         return key;
+    }
+
+    /**
+     * Gets the current master encryption key used for property encryption.
+     * The key is deobfuscated from security.xml.
+     *
+     * This method is primarily used by migration tools and encryption utilities
+     * that need direct access to the master key.
+     *
+     * @return The current master encryption key, or null if no key is configured
+     */
+    public static String getMasterEncryptionKey() {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+        return getCurrentKey();
     }
 
     /**
@@ -1152,6 +1186,278 @@ public class JiveGlobals {
             encryptor = new Blowfish(key);
         }
         return encryptor;
+    }
+
+    /**
+     * Gets the Blowfish encryption salt. If no salt exists, generates a new
+     * cryptographically random 32-byte salt and stores it in security.xml.
+     *
+     * @return Base64-encoded salt (32 bytes)
+     */
+    public static String getBlowfishSalt() {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+
+        String salt = securityProperties.getProperty(BLOWFISH_SALT);
+        if (salt == null || salt.trim().isEmpty()) {
+            // Generate a new random salt (32 bytes for strong security)
+            byte[] saltBytes = new byte[32];
+            new java.security.SecureRandom().nextBytes(saltBytes);
+            salt = Base64.getEncoder().encodeToString(saltBytes);
+            // The setProperty result is intentionally not checked: a failed save is logged by
+            // XMLProperties, and the only caller that requires durability (the SHA1-to-PBKDF2 migration)
+            // gates on isSecurityPropertiesPersistable() up front. Do not rely on this save succeeding
+            // from a new call site without that guard. (OF-3305)
+            securityProperties.setProperty(BLOWFISH_SALT, salt);
+            Log.info("Generated new Blowfish salt for PBKDF2 key derivation");
+        }
+
+        return salt;
+    }
+
+    /**
+     * Gets the Blowfish key derivation function (KDF) type.
+     * Returns "sha1" for legacy single-round SHA1 hashing, or "pbkdf2" for
+     * PBKDF2-HMAC-SHA512 key derivation.
+     *
+     * @return The KDF type ("sha1" or "pbkdf2"), defaults to "sha1" for backward compatibility
+     */
+    public static String getBlowfishKdf() {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+
+        String kdf = securityProperties.getProperty(BLOWFISH_KDF);
+        // Default to SHA1 for backward compatibility with existing installations
+        return (kdf != null && !kdf.trim().isEmpty()) ? kdf : BLOWFISH_KDF_SHA1;
+    }
+
+    /**
+     * Sets the Blowfish key derivation function (KDF) type and re-initialises
+     * the property encryptor cache to use the new KDF immediately.
+     *
+     * @param kdf The KDF type ("sha1" or "pbkdf2")
+     */
+    public static void setBlowfishKdf(String kdf) {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+
+        // The setProperty results below are intentionally not checked: failures are logged by
+        // XMLProperties, and the SHA1-to-PBKDF2 migration gates on isSecurityPropertiesPersistable()
+        // before reaching here. Do not rely on these saves from a new call site without that guard.
+        if (BLOWFISH_KDF_PBKDF2.equalsIgnoreCase(kdf)) {
+            securityProperties.setProperty(BLOWFISH_KDF, BLOWFISH_KDF_PBKDF2);
+            Log.info("Blowfish KDF set to PBKDF2-HMAC-SHA512");
+        } else {
+            securityProperties.setProperty(BLOWFISH_KDF, BLOWFISH_KDF_SHA1);
+            Log.info("Blowfish KDF set to SHA1 (legacy)");
+        }
+
+        // Reinitialise the encryptor cache so new properties use the updated KDF immediately
+        reinitialisePropertyEncryptor();
+    }
+
+    /**
+     * Determines whether the security configuration (conf/security.xml) can be persisted to disk.
+     *
+     * When security.xml cannot be loaded (it is missing, empty, corrupt or not writable), JiveGlobals
+     * falls back to a non-persisting, in-memory-only properties object. Any change written to it (such
+     * as the Blowfish PBKDF2 salt or KDF setting) is logged as an error and then silently lost on the
+     * next restart. Operations that depend on such state surviving a restart (notably the Blowfish
+     * SHA1-to-PBKDF2 migration) must verify this before making any irreversible change.
+     *
+     * This reflects the backing established when security.xml was loaded; it is not a live re-check of
+     * filesystem writability (the file-backed constructor verifies writability at load time).
+     *
+     * @return {@code true} if security properties are backed by a file, otherwise {@code false}
+     */
+    public static boolean isSecurityPropertiesPersistable() {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+        return securityProperties != null && securityProperties.isPersistable();
+    }
+
+    /**
+     * Migrates encrypted XML properties (in openfire.xml) from SHA1 to PBKDF2 key derivation.
+     *
+     * This method uses the encryptor swap pattern to re-encrypt properties:
+     * 1. Sets up SHA1 encryptor for decryption and PBKDF2 encryptor for encryption
+     * 2. Reads property names listed as encrypted in security.xml
+     * 3. For each property: reads value from openfire.xml (decrypts with SHA1),
+     *    writes back (encrypts with PBKDF2)
+     * 4. Restores original encryptor state
+     *
+     * CRITICAL: This operation cannot be reversed without a backup.
+     * Call this BEFORE updating the KDF setting and BEFORE database migration.
+     *
+     * @return Number of XML properties successfully migrated
+     * @throws IllegalStateException if not using Blowfish encryption or already using PBKDF2
+     * @throws RuntimeException if migration fails for any property
+     * @since 5.1.0
+     */
+    public static int migrateXMLPropertiesFromSHA1ToPBKDF2() {
+        // 1. Verify preconditions
+        String algorithm = getEncryptionAlgorithm();
+        if (!ENCRYPTION_ALGORITHM_BLOWFISH.equalsIgnoreCase(algorithm)) {
+            throw new IllegalStateException("Cannot migrate: encryption algorithm is " +
+                    algorithm + ", not Blowfish");
+        }
+
+        String currentKdf = getBlowfishKdf();
+        if (BLOWFISH_KDF_PBKDF2.equalsIgnoreCase(currentKdf)) {
+            throw new IllegalStateException("Cannot migrate: already using PBKDF2");
+        }
+
+        // Refuse to migrate if security.xml cannot be persisted. The migration derives the PBKDF2 key
+        // from a freshly generated salt and records that salt (and the kdf=pbkdf2 flag) in security.xml.
+        // If those writes are silently discarded (security.xml missing, empty, corrupt or not writable),
+        // the salt is lost on the next restart and the re-encrypted data becomes permanently unreadable.
+        // Fail fast here, before any key derivation or database change. (OF-3305)
+        if (!isSecurityPropertiesPersistable()) {
+            throw new IllegalStateException("Cannot migrate: conf/security.xml is not loaded or not writable, "
+                    + "so the new PBKDF2 salt and KDF setting cannot be persisted. "
+                    + "Repair conf/security.xml (ensure it exists, is valid XML, and is writable) before migrating.");
+        }
+
+        // 2. Get the master encryption key
+        String masterKey = getMasterEncryptionKey();
+
+        // 3. Save current encryptor state
+        Encryptor originalEncryptor = propertyEncryptor;
+        Encryptor originalEncryptorNew = propertyEncryptorNew;
+
+        try {
+            // 4. Create SHA1 encryptor (for decryption) and PBKDF2 encryptor (for encryption)
+            Blowfish sha1Blowfish = new Blowfish();
+            sha1Blowfish.setKey(masterKey, BLOWFISH_KDF_SHA1);
+
+            Blowfish pbkdf2Blowfish = new Blowfish();
+            pbkdf2Blowfish.setKey(masterKey, BLOWFISH_KDF_PBKDF2);
+
+            // 5. Swap encryptors: old for decrypt, new for encrypt
+            propertyEncryptor = sha1Blowfish;
+            propertyEncryptorNew = pbkdf2Blowfish;
+
+            // 6. Get list of encrypted property names from security.xml
+            if (securityProperties == null) {
+                loadSecurityProperties();
+            }
+            List<String> encryptedPropertyNames =
+                    securityProperties.getProperties(ENCRYPTED_PROPERTY_NAMES, true);
+
+            Log.info("Starting XML property migration: {} properties to process",
+                    encryptedPropertyNames.size());
+
+            // 7. Migrate each property (values stored in openfire.xml)
+            int migrated = 0;
+            int skipped = 0;
+
+            for (String propertyName : encryptedPropertyNames) {
+                // Get decrypts with SHA1 (via propertyEncryptor)
+                String plaintext = getXMLProperty(propertyName);
+
+                if (plaintext == null || plaintext.isEmpty()) {
+                    // Property doesn't exist or is empty in openfire.xml - skip
+                    Log.debug("Skipping empty XML property: {}", propertyName);
+                    skipped++;
+                    continue;
+                }
+
+                // Set encrypts with PBKDF2 (via propertyEncryptorNew)
+                setXMLProperty(propertyName, plaintext);
+                migrated++;
+                Log.debug("Migrated XML property: {}", propertyName);
+            }
+
+            Log.info("XML property migration complete: {} migrated, {} skipped (empty)",
+                    migrated, skipped);
+            return migrated;
+
+        } finally {
+            // 9. Restore original encryptor state
+            propertyEncryptor = originalEncryptor;
+            propertyEncryptorNew = originalEncryptorNew;
+        }
+    }
+
+    /**
+     * Returns the count of encrypted properties in openfire.xml that have values.
+     * This counts only properties from security.xml that exist in openfire.xml
+     * with non-empty values (i.e., properties that will actually be migrated).
+     *
+     * @return Number of encrypted properties with values in openfire.xml
+     * @since 5.1.0
+     */
+    public static int getEncryptedXMLPropertyValueCount() {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+        List<String> encryptedPropertyNames =
+                securityProperties.getProperties(ENCRYPTED_PROPERTY_NAMES, true);
+        if (encryptedPropertyNames == null) {
+            return 0;
+        }
+
+        int count = 0;
+        for (String propertyName : encryptedPropertyNames) {
+            String rawValue = openfireProperties.getProperty(propertyName);
+            if (rawValue != null && !rawValue.isEmpty()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Checks whether Blowfish encryption migration from SHA1 to PBKDF2 is needed.
+     * Returns true if the server is currently using Blowfish encryption with the
+     * legacy SHA1 key derivation function.
+     *
+     * @return true if migration from SHA1 to PBKDF2 is needed, false otherwise
+     * @since 5.1.0
+     */
+    public static boolean isBlowfishMigrationNeeded() {
+        String encryptionAlgorithm = getEncryptionAlgorithm();
+        if (!ENCRYPTION_ALGORITHM_BLOWFISH.equalsIgnoreCase(encryptionAlgorithm)) {
+            return false;
+        }
+        String kdf = getBlowfishKdf();
+        return BLOWFISH_KDF_SHA1.equalsIgnoreCase(kdf);
+    }
+
+    /**
+     * Returns the encryption algorithm configured in security.xml.
+     *
+     * @return The encryption algorithm ("AES" or "Blowfish"), defaults to "Blowfish" if not configured
+     * @since 5.1.0
+     */
+    public static String getEncryptionAlgorithm() {
+        if (securityProperties == null) {
+            loadSecurityProperties();
+        }
+
+        String algorithm = securityProperties.getProperty(ENCRYPTION_ALGORITHM);
+        return (algorithm != null && !algorithm.trim().isEmpty())
+               ? algorithm
+               : ENCRYPTION_ALGORITHM_BLOWFISH;
+    }
+
+    /**
+     * Re-initialises the property encryptor with the current encryption settings.
+     * Call this after changing the encryption algorithm or KDF to ensure new
+     * properties are encrypted with the updated settings without requiring a restart.
+     *
+     * @since 5.1.0
+     */
+    public static void reinitialisePropertyEncryptor() {
+        String algorithm = getEncryptionAlgorithm();
+        String key = getMasterEncryptionKey();
+        propertyEncryptor = getEncryptor(algorithm, key);
+        propertyEncryptorNew = propertyEncryptor;
+        Log.info("Property encryptor reinitialised with algorithm: {}", algorithm);
     }
 
     /**
@@ -1241,7 +1547,7 @@ public class JiveGlobals {
      * @return true if in setup mode.
      */
     private static boolean isSetupMode() {
-        if (Boolean.valueOf(JiveGlobals.getXMLProperty("setup"))) {
+        if (Boolean.parseBoolean(JiveGlobals.getXMLProperty("setup"))) {
             return false;
         }
         // Check if the DB configuration is done
@@ -1330,7 +1636,7 @@ public class JiveGlobals {
                     }
                 }
                 catch (IOException ioe) {
-                    Log.error("Unable to load default security properties from: {}{}{}", home, File.separator, getConfigName(), ioe);
+                    Log.error("Unable to load security properties from: {}", getSecurityConfigLocation(), ioe);
                     failedLoading = true;
                 }
             }
@@ -1381,9 +1687,49 @@ public class JiveGlobals {
             securityProperties.deleteProperty(ENCRYPTION_KEY_NEW);
             securityProperties.deleteProperty(ENCRYPTION_KEY_OLD);
         }
+    
+        // (re)write the encryption key to the security XML file (obfuscated, not encrypted)
+        securityProperties.setProperty(ENCRYPTION_KEY_CURRENT, new Obfuscator().obfuscate(currentKey));
 
-        // (re)write the encryption key to the security XML file
-        securityProperties.setProperty(ENCRYPTION_KEY_CURRENT, new AesEncryptor().encrypt(currentKey));
+        // Initialise Blowfish KDF for new installations
+        initializeBlowfishKdf();
+    }
+
+    /**
+     * Initialises the Blowfish key derivation function (KDF) for new installations.
+     * For fresh installations (setup not complete), sets PBKDF2 as the default KDF.
+     * For existing installations, preserves the current KDF (SHA1 or PBKDF2) and logs appropriate messages.
+     *
+     * This method is called once during security properties initialization. It determines whether this
+     * is a new or existing installation by checking if setup has been completed. This ensures new
+     * installations use the stronger PBKDF2-HMAC-SHA512 key derivation whilst existing installations
+     * maintain backward compatibility with their current configuration.
+     */
+    private static void initializeBlowfishKdf() {
+        String currentKdf = securityProperties.getProperty(BLOWFISH_KDF, false);
+
+        if (currentKdf == null || currentKdf.trim().isEmpty()) {
+            // No KDF configured yet - determine if this is a new or existing installation
+            if (isSetupMode()) {
+                // New installation (setup not complete): set PBKDF2 as default
+                securityProperties.setProperty(BLOWFISH_KDF, BLOWFISH_KDF_PBKDF2);
+                // Salt will be auto-generated when first accessed by getBlowfishSalt()
+                Log.info("New installation detected: Blowfish KDF set to PBKDF2-HMAC-SHA512");
+            } else {
+                // Existing installation (setup complete): keep SHA1 for backward compatibility
+                // Don't set the property - getBlowfishKdf() will default to SHA1
+                Log.warn("Existing installation detected with no Blowfish KDF configured. " +
+                        "Defaulting to legacy SHA1 for backward compatibility. " +
+                        "Consider migrating to PBKDF2 via the admin console for improved security.");
+            }
+        } else if (BLOWFISH_KDF_SHA1.equalsIgnoreCase(currentKdf)) {
+            // Existing installation explicitly using SHA1
+            Log.warn("Blowfish is using legacy SHA1 key derivation. " +
+                    "Consider migrating to PBKDF2 via the admin console for improved security.");
+        } else if (BLOWFISH_KDF_PBKDF2.equalsIgnoreCase(currentKdf)) {
+            // Already using PBKDF2
+            Log.info("Blowfish is using PBKDF2-HMAC-SHA512 key derivation");
+        }
     }
 
     public static final String[] setupExcludePaths = {

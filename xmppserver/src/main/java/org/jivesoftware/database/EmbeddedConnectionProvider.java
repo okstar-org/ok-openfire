@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,19 +65,24 @@ public class EmbeddedConnectionProvider implements ConnectionProvider {
     @Override
     public void start() {
         final Path databaseDir = JiveGlobals.getHomePath().resolve("embedded-db");
-        try {
-            // If the database doesn't exist, create it.
-            if (!Files.exists(databaseDir)) {
-                Files.createDirectory(databaseDir);
+        // If the database doesn't exist, create it.
+        if (!Files.exists(databaseDir)) {
+            if (Files.isSymbolicLink(databaseDir)) {
+                Log.error("'embedded-db' {} is a link to a directory that doesn't exists", databaseDir);
+                throw new RuntimeException("'embedded-db' %s is a link to a directory that doesn't exists".formatted(databaseDir));
             }
-        } catch (IOException e) {
-            Log.error("Unable to create 'embedded-db' directory", e);
+            try {
+                Files.createDirectory(databaseDir);
+            } catch (IOException e) {
+                Log.error("Unable to create 'embedded-db' directory", e);
+                throw new RuntimeException("Unable to create 'embedded-db' directory", e);
+            }
         }
 
         serverURL = "jdbc:hsqldb:" + databaseDir.resolve("openfire");
         final ConnectionFactory connectionFactory = new DriverManagerConnectionFactory(serverURL, "sa", "");
         final PoolableConnectionFactory poolableConnectionFactory = new PoolableConnectionFactory(connectionFactory, null);
-        poolableConnectionFactory.setMaxConnLifetimeMillis(Duration.ofHours(12).toMillis());
+        poolableConnectionFactory.setMaxConn(Duration.ofHours(12));
 
         final GenericObjectPoolConfig<PoolableConnection> poolConfig = new GenericObjectPoolConfig<>();
         poolConfig.setMinIdle(3);
@@ -110,6 +115,13 @@ public class EmbeddedConnectionProvider implements ConnectionProvider {
         }
         finally {
             DbConnectionManager.closeConnection(pstmt, con);
+        }
+        try {
+            if (dataSource != null) {
+                dataSource.close();
+            }
+        } catch (final Exception e) {
+            Log.error("Unable to close the data source", e);
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -192,10 +192,10 @@ public class IQRegisterHandler extends IQHandler implements ServerFeaturesProvid
                         currentRegistration.element("name").setText(user.getName());
 
                         Element form = currentRegistration.element(QName.get("x", "jabber:x:data"));
-                        Iterator fields = form.elementIterator("field");
+                        Iterator<Element> fields = form.elementIterator("field");
                         Element field;
                         while (fields.hasNext()) {
-                            field = (Element) fields.next();
+                            field = fields.next();
                             if ("username".equals(field.attributeValue("var"))) {
                                 field.addElement("value").addText(user.getUsername());
                             }
@@ -249,10 +249,9 @@ public class IQRegisterHandler extends IQHandler implements ServerFeaturesProvid
                             Thread.sleep(10);
                             // Close the user's connection
                             final StreamError error = new StreamError(StreamError.Condition.not_authorized);
-                            for (ClientSession sess : sessionManager.getSessions(user.getUsername()) )
+                            for (ClientSession sess : sessionManager.getSessions(XMPPServer.getInstance().createJID(user.getUsername(), null)) )
                             {
-                                sess.deliverRawText(error.toXML());
-                                sess.close();
+                                sess.close(error);
                             }
                             // The reply has been sent so clean up the variable
                             reply = null;
@@ -343,7 +342,7 @@ public class IQRegisterHandler extends IQHandler implements ServerFeaturesProvid
                         else {
                             User user = userManager.getUser(session.getUsername());
                             if (user.getUsername().equalsIgnoreCase(username)) {
-                                if (password != null && password.trim().length() > 0) {
+                                if (password != null && !password.trim().isEmpty()) {
                                     user.setPassword(password);
                                 }
                                 if (!onlyPassword) {
@@ -351,7 +350,7 @@ public class IQRegisterHandler extends IQHandler implements ServerFeaturesProvid
                                 }
                                 newUser = user;
                             }
-                            else if (password != null && password.trim().length() > 0) {
+                            else if (password != null && !password.trim().isEmpty()) {
                                 // An admin can create new accounts when logged in.
                                 newUser = userManager.createUser(username, password, null, email);
                             }
@@ -374,7 +373,7 @@ public class IQRegisterHandler extends IQHandler implements ServerFeaturesProvid
                         }
                         // Inform the entity of failed registration if some required
                         // information was not provided
-                        else if (password == null || password.trim().length() == 0) {
+                        else if (password == null || password.trim().isEmpty()) {
                             reply = IQ.createResultIQ(packet);
                             reply.setChildElement(packet.getChildElement().createCopy());
                             reply.setError(PacketError.Condition.not_acceptable);

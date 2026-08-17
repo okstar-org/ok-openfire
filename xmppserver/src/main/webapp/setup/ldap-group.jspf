@@ -26,7 +26,7 @@
 
     LdapManager manager = LdapManager.getInstance();
 
-    // Determine the right default values based on the the server type.
+    // Determine the right default values based on the server type.
     String defaultGroupNameField = JiveGlobals.getProperty("ldap.groupNameField");
     String defaultGroupMemberField = JiveGlobals.getProperty("ldap.groupMemberField");
     String defaultGroupDescriptionField = JiveGlobals.getProperty("ldap.groupDescriptionField");
@@ -109,7 +109,7 @@
 
     if (save || test) {
         // Save information in the session so we can use it in testing pages during setup
-        Map<String, String> settings = new HashMap<String, String>();
+        Map<String, String> settings = new HashMap<>();
         settings.put("ldap.groupNameField", groupNameField);
         settings.put("ldap.groupMemberField", groupMemberField);
         settings.put("ldap.groupDescriptionField", groupDescriptionField);

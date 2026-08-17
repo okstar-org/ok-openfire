@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2016-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -18,25 +18,25 @@
 <%--
 --%>
 
-<%@ page import="org.jivesoftware.openfire.XMPPServer,
+<%@ page import="java.net.URLDecoder,
+                 java.util.*,
+                 java.util.stream.Collectors,
+                 javax.servlet.http.HttpSession,
+                 org.jivesoftware.openfire.XMPPServer,
+                 org.jivesoftware.openfire.XMPPServerInfo,
+                 org.jivesoftware.openfire.admin.GroupBasedAdminProvider,
                  org.jivesoftware.openfire.auth.AuthFactory,
+                 org.jivesoftware.openfire.auth.UnauthorizedException,
+                 org.jivesoftware.openfire.ldap.LdapGroupProvider,
                  org.jivesoftware.openfire.ldap.LdapManager,
                  org.jivesoftware.openfire.user.User,
                  org.jivesoftware.openfire.user.UserManager,
+                 org.jivesoftware.util.CookieUtils,
                  org.jivesoftware.util.JiveGlobals,
-                 org.jivesoftware.util.ParamUtils" %>
-<%@ page import="org.jivesoftware.util.StringUtils"%>
-<%@ page import="org.xmpp.packet.JID"%>
-<%@ page import="javax.servlet.http.HttpSession" %>
-<%@ page import="java.util.*" %>
-<%@ page import="org.jivesoftware.openfire.auth.UnauthorizedException" %>
-<%@ page import="org.jivesoftware.openfire.XMPPServerInfo" %>
-<%@ page import="java.util.stream.Collectors" %>
-<%@ page import="org.jivesoftware.util.CookieUtils" %>
-<%@ page import="java.net.URLDecoder" %>
-<%@ page import="org.jivesoftware.openfire.ldap.LdapGroupProvider" %>
-<%@ page import="org.jivesoftware.openfire.admin.GroupBasedAdminProvider" %>
-
+                 org.jivesoftware.util.ParamUtils,
+                 org.jivesoftware.util.StringUtils,
+                 org.xmpp.packet.JID"
+%>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -68,7 +68,7 @@
     boolean doSkip = request.getParameter("doSkip") != null;
     boolean doTest = request.getParameter("test") != null;
 
-    boolean ldap = "true".equals(request.getParameter("ldap"));
+    boolean ldap = ParamUtils.getBooleanParameter(request, "ldap");
 
     boolean addAdmin = request.getParameter("addAdministrator") != null;
     boolean deleteAdmins = request.getParameter("deleteAdmins") != null;
@@ -117,7 +117,7 @@
             errors.put("match", "match");
         }
         // if no errors, continue:
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             try {
                 User adminUser = UserManager.getInstance().getUser("admin");
                 adminUser.setPassword(newPassword);
@@ -243,7 +243,7 @@
         }
 
         String newUserList = StringUtils.collectionToString(temporaryUserList);
-        if (temporaryUserList.size() == 0) {
+        if (temporaryUserList.isEmpty()) {
             xmppSettings.put("admin.authorizedJIDs", "");
         } else {
             xmppSettings.put("admin.authorizedJIDs", newUserList);
@@ -255,7 +255,7 @@
     // entries.
     if (!ldap && !doTest) {
         String currentAdminList = xmppSettings.get("admin.authorizedJIDs");
-        List<String> adminCollection = new ArrayList<String>(StringUtils.stringToCollection(currentAdminList));
+        List<String> adminCollection = new ArrayList<>(StringUtils.stringToCollection(currentAdminList));
         if ((!adminCollection.isEmpty() && !adminCollection.contains("admin")) ||
                 xmppSettings.get("admin.authorizedJIDs") != null) {
             adminCollection.add(new JID("admin", domain, null).toBareJID());
@@ -372,7 +372,7 @@ function checkClick() {
                 </td>
                 <td>
                     <input type="password" name="password" id="password" size="20" maxlength="50"
-                     value="${not empty password ? fn:escapeXml(password) : ''}"><br>
+                     value="${fn:escapeXml(password)}"><br>
 
                     <c:choose>
                         <c:when test="${not empty errors['password']}">
@@ -436,7 +436,7 @@ function checkClick() {
     </td>
     <td>
         <input type="password" name="newPassword" id="newPassword" size="20" maxlength="50"
-         value="${not empty newPassword ? fn:escapeXml(newPassword) : ''}"><br>
+         value="${fn:escapeXml(newPassword)}"><br>
 
         <c:choose>
             <c:when test="${not empty errors['newPassword']}">
@@ -458,7 +458,7 @@ function checkClick() {
     </td>
     <td>
         <input type="password" name="newPasswordConfirm" id="newPasswordConfirm" size="20" maxlength="50"
-         value="${not empty newPasswordConfirm ? fn:escapeXml(newPasswordConfirm) : ''}"><br>
+         value="${fn:escapeXml(newPasswordConfirm)}"><br>
         <c:if test="${not empty errors['newPasswordConfirm']}">
             <span class="jive-error-text">
                 <fmt:message key="setup.admin.settings.valid_confirm" />
@@ -540,7 +540,7 @@ document.acctform.newPassword.focus();
             <label for="administrator"><fmt:message key="setup.admin.settings.add.administrator" />:</label>
         </td>
         <td>
-            <input type="text" name="administrator" id="administrator" size="20" maxlength="50" value="${not empty xmppSettings['provider.group.groupBasedAdminProvider.groupName'] ? fn:escapeXml(xmppSettings['provider.group.groupBasedAdminProvider.groupName']) : ''}"/>
+            <input type="text" name="administrator" id="administrator" size="20" maxlength="50" value="${fn:escapeXml(xmppSettings['provider.group.groupBasedAdminProvider.groupName'])}"/>
         </td>
     </tr>
     <tr>

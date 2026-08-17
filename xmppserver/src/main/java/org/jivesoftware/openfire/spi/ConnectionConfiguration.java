@@ -20,6 +20,7 @@ import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.keystore.*;
 
 import java.net.InetAddress;
+import java.security.Security;
 import java.util.*;
 
 /**
@@ -43,12 +44,14 @@ public class ConnectionConfiguration
     private final CertificateStoreConfiguration trustStoreConfiguration;
     private final boolean acceptSelfSignedCertificates;
     private final boolean verifyCertificateValidity;
+    private final boolean verifyCertificateRevocation;
     private final boolean strictCertificateValidation;
     private final Set<String> encryptionProtocols;
     private final Set<String> encryptionCipherSuites;
     private final Connection.CompressionPolicy compressionPolicy;
 
     // derived
+    private final boolean isOcspEnabled;
     private final IdentityStore identityStore;
     private final TrustStore trustStore;
 
@@ -64,14 +67,15 @@ public class ConnectionConfiguration
      * @param identityStoreConfiguration the certificates the server identify as
      * @param trustStoreConfiguration the certificates the server trusts
      * @param acceptSelfSignedCertificates {@code true} to accept self-signed certificates, otherwise {@code false}
-     * @param verifyCertificateValidity {@code true} to accept self-signed certificates, otherwise {@code false}
+     * @param verifyCertificateValidity {@code true} to verify validity of certificates (based on their 'notBefore' and 'notAfter' property values), otherwise {@code false}
+     * @param verifyCertificateRevocation {@code true} to check certificate revocation status, otherwise {@code false}
      * @param encryptionProtocols the set of protocols supported
      * @param encryptionCipherSuites the set of ciphers supported
      * @param compressionPolicy the compression policy
      * @param strictCertificateValidation {@code true} to abort connections if certificate validation fails, otherwise {@code false}
      */
     // TODO input validation
-    public ConnectionConfiguration( ConnectionType type, boolean enabled, int maxThreadPoolSize, int maxBufferSize, Connection.ClientAuth clientAuth, InetAddress bindAddress, int port, Connection.TLSPolicy tlsPolicy, CertificateStoreConfiguration identityStoreConfiguration, CertificateStoreConfiguration trustStoreConfiguration, boolean acceptSelfSignedCertificates, boolean verifyCertificateValidity, Set<String> encryptionProtocols, Set<String> encryptionCipherSuites, Connection.CompressionPolicy compressionPolicy, boolean strictCertificateValidation )
+    public ConnectionConfiguration( ConnectionType type, boolean enabled, int maxThreadPoolSize, int maxBufferSize, Connection.ClientAuth clientAuth, InetAddress bindAddress, int port, Connection.TLSPolicy tlsPolicy, CertificateStoreConfiguration identityStoreConfiguration, CertificateStoreConfiguration trustStoreConfiguration, boolean acceptSelfSignedCertificates, boolean verifyCertificateValidity,  boolean verifyCertificateRevocation, Set<String> encryptionProtocols, Set<String> encryptionCipherSuites, Connection.CompressionPolicy compressionPolicy, boolean strictCertificateValidation )
     {
         if ( maxThreadPoolSize <= 0 ) {
             throw new IllegalArgumentException( "Argument 'maxThreadPoolSize' must be equal to or greater than one." );
@@ -92,11 +96,13 @@ public class ConnectionConfiguration
         this.trustStoreConfiguration = trustStoreConfiguration;
         this.acceptSelfSignedCertificates = acceptSelfSignedCertificates;
         this.verifyCertificateValidity = verifyCertificateValidity;
+        this.verifyCertificateRevocation = verifyCertificateRevocation;
         this.encryptionProtocols = Collections.unmodifiableSet( encryptionProtocols );
         this.encryptionCipherSuites = Collections.unmodifiableSet( encryptionCipherSuites );
         this.compressionPolicy = compressionPolicy;
         this.strictCertificateValidation = strictCertificateValidation;
 
+        this.isOcspEnabled = Boolean.parseBoolean(Security.getProperty("ocsp.enable"));
         final CertificateStoreManager certificateStoreManager = XMPPServer.getInstance().getCertificateStoreManager();
         this.identityStore = certificateStoreManager.getIdentityStore( type );
         this.trustStore = certificateStoreManager.getTrustStore( type );
@@ -174,6 +180,17 @@ public class ConnectionConfiguration
     }
 
     /**
+     * A boolean that indicates if the revocation status of certificates is checked when they are used to establish an
+     * encrypted connection.
+     *
+     * @return true when the revocation status of certificates is checked, otherwise false.
+     */
+    public boolean isVerifyCertificateRevocation()
+    {
+        return verifyCertificateRevocation;
+    }
+
+    /**
      * A collection of protocol names that can be used for encryption of connections.
      *
      * When non-empty, the list is intended to specify those protocols (from a larger collection of implementation-
@@ -213,6 +230,19 @@ public class ConnectionConfiguration
     public TrustStore getTrustStore()
     {
         return trustStore;
+    }
+
+    /**
+     * Indicates if client-driven Online Certificate Status Protocol (OCSP) is enabled.
+     *
+     * This is a prerequisite to enable client-driven OCSP, it has no effect unless revocation
+     * checking is also enabled.
+     *
+     * @return true if client-driven OCSP is enabled, otherwise false.
+     */
+    public boolean isOcspEnabled()
+    {
+        return isOcspEnabled;
     }
 
     public boolean isEnabled()

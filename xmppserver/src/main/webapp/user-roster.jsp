@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2005-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 <%@ page import="java.util.*" %>
 <%@ page import="org.jivesoftware.openfire.group.Group" %>
 <%@ page import="org.xmpp.packet.JID" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%!
     final int DEFAULT_RANGE = 15;
@@ -62,7 +63,7 @@
     // Get parameters //
     String username = ParamUtils.getParameter(request, "username");
 
-    String usernameUrlEncoded = URLEncoder.encode(username, "UTF-8");
+    String usernameUrlEncoded = URLEncoder.encode(username, StandardCharsets.UTF_8);
     pageContext.setAttribute( "usernameUrlEncoded", usernameUrlEncoded);
     pageContext.setAttribute( "usernameHtmlEscaped", StringUtils.escapeHTMLTags(JID.unescapeNode(username)) );
 
@@ -252,8 +253,8 @@
     </tr>
     <%
         } else {
-            List<RosterItem> rosterItems = new ArrayList<RosterItem>(roster.getRosterItems());
-            Collections.sort(rosterItems, new RosterItemComparator());
+            List<RosterItem> rosterItems = new ArrayList<>(roster.getRosterItems());
+            rosterItems.sort(new RosterItemComparator());
             int i = 0;
             for (RosterItem rosterItem : rosterItems) {
                 if (filter == 2 && !rosterItem.isOnlyShared()) {
@@ -276,7 +277,7 @@
             <%= i %>
         </td>
         <td>
-            <a href="user-roster-view.jsp?username=${usernameUrlEncoded}&jid=<%= URLEncoder.encode(rosterItem.getJid().toString(), "UTF-8") %>"
+            <a href="user-roster-view.jsp?username=${usernameUrlEncoded}&jid=<%= URLEncoder.encode(rosterItem.getJid().toString(), StandardCharsets.UTF_8) %>"
              title="<fmt:message key="user.roster.click_view" />"
              ><%= rosterItem.getJid() %></a>
         </td>
@@ -303,7 +304,7 @@
                             if (count != 0) {
                                 out.print(", ");
                             }
-                            out.print("<a style='text-decoration: underline' href='group-edit.jsp?group="+URLEncoder.encode(group.getName(), "UTF-8")+"'>");
+                            out.print("<a style='text-decoration: underline' href='group-edit.jsp?group="+URLEncoder.encode(group.getName(), StandardCharsets.UTF_8)+"'>");
                             out.print(StringUtils.escapeHTMLTags(group.getName()));
                             out.print("</a>");
                             count++;
@@ -321,13 +322,13 @@
             <%= rosterItem.getSubStatus().getName() %>
         </td>
         <td style="width: 1%; text-align: center">
-            <a href="user-roster-edit.jsp?username=${usernameUrlEncoded}&jid=<%= URLEncoder.encode(rosterItem.getJid().toString(), "UTF-8") %>"
+            <a href="user-roster-edit.jsp?username=${usernameUrlEncoded}&jid=<%= URLEncoder.encode(rosterItem.getJid().toString(), StandardCharsets.UTF_8) %>"
              title="<fmt:message key="global.click_edit" />"
              ><img src="images/edit-16x16.gif" alt="<fmt:message key="global.click_edit" />"></a>
         </td>
         <td style="width: 1%; text-align: center; border-right:1px #ccc solid;">
             <% if (sharedGroups.isEmpty()) { %>
-            <a href="user-roster-delete.jsp?username=${usernameUrlEncoded}&jid=<%= URLEncoder.encode(rosterItem.getJid().toString(), "UTF-8") %>"
+            <a href="user-roster-delete.jsp?username=${usernameUrlEncoded}&jid=<%= URLEncoder.encode(rosterItem.getJid().toString(), StandardCharsets.UTF_8) %>"
              title="<fmt:message key="global.click_delete" />"
              ><img src="images/delete-16x16.gif" alt="<fmt:message key="global.click_delete" />"></a>
             <% } else { %>

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package org.jivesoftware.util;
 
 import com.google.common.net.InetAddresses;
 import com.google.common.net.InternetDomainName;
+import org.apache.http.Header;
 import org.apache.http.HttpStatus;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
@@ -26,7 +27,6 @@ import org.apache.http.client.methods.RequestBuilder;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.impl.client.LaxRedirectStrategy;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.util.EntityUtils;
 import org.jivesoftware.openfire.SessionManager;
@@ -47,7 +47,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.util.HashSet;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -78,14 +77,12 @@ public class FaviconServlet extends HttpServlet {
      * Pool of HTTP connections to use to get the favicons
      */
     private CloseableHttpClient client;
+
     /**
-     * Cache the domains that a favicon was not found.
+     * Cache of favicons. A present value holds the favicon bytes; an absent value
+     * records that the host was checked and has no (usable) favicon.
      */
-    private Cache<String, Integer> missesCache;
-    /**
-     * Cache the favicons that we've found.
-     */
-    private Cache<String, byte[]> hitsCache;
+    private Cache<String, CacheableOptional<byte[]>> faviconCache;
 
     @Override
     public void init(ServletConfig config) throws ServletException {
@@ -93,7 +90,7 @@ public class FaviconServlet extends HttpServlet {
         // Create a pool of HTTP connections to use to get the favicons
         client = HttpClientBuilder.create()
             .setConnectionManager(new PoolingHttpClientConnectionManager())
-            .setRedirectStrategy(new LaxRedirectStrategy())
+            .disableRedirectHandling()
             .build();
         // Load the default favicon to use when no favicon was found of a remote host
         try {
@@ -102,9 +99,8 @@ public class FaviconServlet extends HttpServlet {
         catch (final IOException e) {
             LOGGER.warn("Unable to retrieve default favicon", e);
         }
-        // Initialize caches.
-        missesCache = CacheFactory.createCache("Favicon Misses");
-        hitsCache = CacheFactory.createCache("Favicon Hits");
+        // Initialize cache.
+        faviconCache = CacheFactory.createCache("Favicon");
     }
 
     @Override
@@ -127,21 +123,24 @@ public class FaviconServlet extends HttpServlet {
         final String host = request.getParameter("host");
 
         // OF-1885: Ensure that the provided value is a valid hostname.
-        if (!InetAddresses.isInetAddress(host) && !InternetDomainName.isValid(host)) {
+        if (host == null || (!InetAddresses.isInetAddress(host) && !InternetDomainName.isValid(host))) {
             LOGGER.info("Request for favicon of hostname that can't be parsed as a valid hostname '{}' is ignored.", host);
-            writeBytesToStream(defaultBytes, response);
+            if (defaultBytes != null) {
+                writeBytesToStream(defaultBytes, response);
+            } else {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            }
             return;
         }
 
         // Validate that we're connected to the host
-        final SessionManager sessionManager = SessionManager.getInstance();
-        final Optional<String> optionalHost = Stream
-            .concat(sessionManager.getIncomingServers().stream(), sessionManager.getOutgoingServers().stream())
-            .filter(remoteServerHost -> remoteServerHost.equalsIgnoreCase(host))
-            .findAny();
-        if (!optionalHost.isPresent()) {
+        if (!isConnectedHost(host)) {
             LOGGER.info("Request to unconnected host {} ignored - using default response", host);
-            writeBytesToStream(defaultBytes, response);
+            if (defaultBytes != null) {
+                writeBytesToStream(defaultBytes, response);
+            } else {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            }
             return;
         }
 
@@ -150,7 +149,20 @@ public class FaviconServlet extends HttpServlet {
         byte[] bytes = getImage(hostToUse, defaultBytes);
         if (bytes != null) {
             writeBytesToStream(bytes, response);
+        } else {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
         }
+    }
+
+    /**
+     * Returns true if the supplied host is a server to which Openfire currently has an (incoming or outgoing)
+     * server-to-server connection.
+     */
+    private boolean isConnectedHost(@Nonnull final String host) {
+        final SessionManager sessionManager = SessionManager.getInstance();
+        return Stream
+            .concat(sessionManager.getIncomingServers().stream(), sessionManager.getOutgoingServers().stream())
+            .anyMatch(remoteServerHost -> remoteServerHost.equalsIgnoreCase(host));
     }
 
     /**
@@ -158,9 +170,9 @@ public class FaviconServlet extends HttpServlet {
      *
      * @param bytes the bytes to write to the <code>ServletOutputStream</code>.
      */
-    private void writeBytesToStream(byte[] bytes, HttpServletResponse response) {
+    private void writeBytesToStream(@Nonnull byte[] bytes, @Nonnull HttpServletResponse response) {
         response.setContentType(CONTENT_TYPE);
-
+        response.setHeader("Cache-Control", "public, max-age=86400");
         // Send image
         try (ServletOutputStream sos = response.getOutputStream()) {
             sos.write(bytes);
@@ -168,6 +180,7 @@ public class FaviconServlet extends HttpServlet {
         }
         catch (IOException e) {
             // Do nothing
+            LOGGER.trace("Unable to write favicon to response", e);
         }
     }
 
@@ -177,35 +190,14 @@ public class FaviconServlet extends HttpServlet {
      * @param host the name of the host to get its favicon.
      * @return the image bytes found, otherwise null.
      */
-    private byte[] getImage(String host, byte[] defaultImage) {
-        // If we've already attempted to get the favicon twice and failed,
-        // return the default image.
-        if (missesCache.get(host) != null && missesCache.get(host) > 1) {
-            // Domain does not have a favicon so return default icon
-            return defaultImage;
+    private byte[] getImage(@Nonnull String host, byte[] defaultImage) {
+        final CacheableOptional<byte[]> cached = faviconCache.get(host);
+        if (cached != null) {
+            return cached.isPresent() ? cached.get() : defaultImage;
         }
-        // See if we've cached the favicon.
-        if (hitsCache.containsKey(host)) {
-            return hitsCache.get(host);
-        }
-        byte[] bytes = getImage(host);
-        if (bytes == null) {
-            // Cache that the requested domain does not have a favicon. Check if this
-            // is the first cache miss or the second.
-            if (missesCache.get(host) != null) {
-                missesCache.put(host, 2);
-            }
-            else {
-                missesCache.put(host, 1);
-            }
-            // Return byte of default icon
-            bytes = defaultImage;
-        }
-        // Cache the favicon.
-        else {
-            hitsCache.put(host, bytes);
-        }
-        return bytes;
+        final byte[] bytes = getImage(host);
+        faviconCache.put(host, CacheableOptional.of(bytes));
+        return bytes != null ? bytes : defaultImage;
     }
 
     private byte[] getImage(@Nonnull final String host) {
@@ -226,24 +218,53 @@ public class FaviconServlet extends HttpServlet {
             .setSocketTimeout(5000)
             .build();
 
-        for (final URI url : urls) {
-            final HttpUriRequest getRequest = RequestBuilder.get(url)
-                .setConfig(requestConfig)
-                .build();
+        for (final URI startUrl : urls) {
+            URI url = startUrl;
+            int redirectsRemaining = 5; // Prevent infinite loops.
 
-            try (final CloseableHttpResponse response = client.execute(getRequest)) {
-                if (response.getStatusLine().getStatusCode() == HttpStatus.SC_OK) {
-                    final byte[] result = EntityUtils.toByteArray(response.getEntity());
+            while (url != null && redirectsRemaining-- > 0) {
+                final HttpUriRequest getRequest = RequestBuilder.get(url)
+                    .setConfig(requestConfig)
+                    .build();
 
-                    // Prevent SSRF by checking result (OF-1885)
-                    if (!GraphicsUtils.isImage(result)) {
-                        LOGGER.info("Ignoring response to an HTTP request that should have returned an image (but returned something else): {}", url);
+                try (final CloseableHttpResponse response = client.execute(getRequest)) {
+                    final int status = response.getStatusLine().getStatusCode();
+
+                    if (status == HttpStatus.SC_OK) {
+                        final byte[] result = EntityUtils.toByteArray(response.getEntity());
+                        if (!GraphicsUtils.isImage(result)) {
+                            LOGGER.info("Ignoring response to an HTTP request that should have returned an image (but returned something else): {}", url);
+                            break;
+                        }
+                        return result;
+                    }
+
+                    if (status >= 300 && status < 400) {
+                        final Header location = response.getFirstHeader("Location");
+                        if (location == null) {
+                            break;
+                        }
+                        // Resolve relative redirects against the current URL.
+                        // Rather than using LaxRedirectStrategy, re-validate redirect targets to prevent SSRF (OF-3315)
+                        final URI target = url.resolve(location.getValue());
+                        if (!"http".equalsIgnoreCase(target.getScheme()) && !"https".equalsIgnoreCase(target.getScheme())) {
+                            break;
+                        }
+                        final String targetHost = target.getHost();
+                        if (targetHost == null || !isConnectedHost(targetHost)) {
+                            LOGGER.info("Ignoring redirect to non-connected or unparseable host: {}", location.getValue());
+                            break;
+                        }
+                        url = target;
                         continue;
                     }
-                    return result;
+
+                    // Any other status: give up on this URL.
+                    break;
+                } catch (final IOException ex) {
+                    LOGGER.debug("An exception occurred while trying to obtain an image from: {}", url, ex);
+                    break;
                 }
-            } catch (final IOException ex) {
-                LOGGER.debug("An exception occurred while trying to obtain an image from: {}", url, ex);
             }
         }
         return null;

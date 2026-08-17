@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import java.util.Set;
 import org.jivesoftware.database.DbConnectionManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.auth.AuthFactory;
+import org.jivesoftware.openfire.sasl.ScramSha1SaslServer;
 import org.jivesoftware.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,7 +57,9 @@ public class DefaultUserProvider implements UserProvider {
     private static final Logger Log = LoggerFactory.getLogger(DefaultUserProvider.class);
 
     private static final String LOAD_USER =
-            "SELECT salt, serverKey, storedKey, iterations, name, email, creationDate, modificationDate FROM ofUser WHERE username=?";
+        "SELECT name, email, creationDate, modificationDate FROM ofUser WHERE username=?";
+    private static final String LOAD_SCRAM_CREDENTIAL =
+        "SELECT salt, serverKey, storedKey, iterations FROM ofUserScram WHERE username=? AND mechanism=?";
     private static final String USER_COUNT =
             "SELECT count(*) FROM ofUser";
     private static final String ALL_USERS =
@@ -81,6 +84,7 @@ public class DefaultUserProvider implements UserProvider {
     private static final boolean IS_READ_ONLY = false;
     
     @Override
+    @SuppressWarnings("removal") // populates User's deprecated (forRemoval) SCRAM-SHA-1 accessors from ofUserScram
     public User loadUser(String username) throws UserNotFoundException {
         if(username.contains("@")) {
             if (!XMPPServer.getInstance().isLocal(new JID(username))) {
@@ -99,20 +103,24 @@ public class DefaultUserProvider implements UserProvider {
             if (!rs.next()) {
                 throw new UserNotFoundException();
             }
-            String salt = rs.getString(1);
-            String serverKey = rs.getString(2);
-            String storedKey = rs.getString(3);
-            int iterations = rs.getInt(4);
-            String name = rs.getString(5);
-            String email = rs.getString(6);
-            Date creationDate = new Date(Long.parseLong(rs.getString(7).trim()));
-            Date modificationDate = new Date(Long.parseLong(rs.getString(8).trim()));
+            String name = rs.getString(1);
+            String email = rs.getString(2);
+            Date creationDate = new Date(Long.parseLong(rs.getString(3).trim()));
+            Date modificationDate = new Date(Long.parseLong(rs.getString(4).trim()));
+            DbConnectionManager.fastcloseStmt(rs, pstmt);
 
             User user = new User(username, name, email, creationDate, modificationDate);
-            user.setSalt(salt);
-            user.setServerKey(serverKey);
-            user.setStoredKey(storedKey);
-            user.setIterations(iterations);
+
+            pstmt = con.prepareStatement(LOAD_SCRAM_CREDENTIAL);
+            pstmt.setString(1, username);
+            pstmt.setString(2, ScramSha1SaslServer.MECHANISM_NAME); // "SCRAM-SHA-1"
+            rs = pstmt.executeQuery();
+            if (rs.next()) {
+                user.setSalt(rs.getString(1));
+                user.setServerKey(rs.getString(2));
+                user.setStoredKey(rs.getString(3));
+                user.setIterations(rs.getInt(4));
+            }
             return user;
         }
         catch (Exception e) {
@@ -179,7 +187,7 @@ public class DefaultUserProvider implements UserProvider {
         PreparedStatement pstmt = null;
         boolean abortTransaction = false;
         try {
-            // Delete all of the users's extended properties
+            // Delete all of the user's extended properties
             con = DbConnectionManager.getTransactionConnection();
             pstmt = con.prepareStatement(DELETE_USER_PROPS);
             pstmt.setString(1, username);
@@ -249,10 +257,15 @@ public class DefaultUserProvider implements UserProvider {
             con = DbConnectionManager.getConnection();
             if ((startIndex==0) && (numResults==Integer.MAX_VALUE))
             {
-                pstmt = con.prepareStatement(ALL_USERS);
+                // MSSQL differentiates between client-cursored and server-cursored result sets. For server-cursored result
+                // sets, the fetch buffer and scroll window are the same size (as opposed to fetch buffer containing all
+                // the rows). To hint that a server-cursored result set is desired, it should be configured to be 'forward
+                // only' as well as 'read only'.
+                pstmt = con.prepareStatement(ALL_USERS, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
                 // Set the fetch size. This will prevent some JDBC drivers from trying
                 // to load the entire result set into memory.
                 DbConnectionManager.setFetchSize(pstmt, 500);
+                pstmt.setFetchDirection(ResultSet.FETCH_FORWARD);
                 rs = pstmt.executeQuery();
                 while (rs.next()) {
                     usernames.add(rs.getString(1));
@@ -395,7 +408,7 @@ public class DefaultUserProvider implements UserProvider {
         if (!getSearchFields().containsAll(fields)) {
             throw new IllegalArgumentException("Search fields " + fields + " are not valid.");
         }
-        if (query == null || "".equals(query)) {
+        if (query == null || query.isEmpty()) {
             return Collections.emptyList();
         }
         // SQL LIKE queries don't map directly into a keyword/wildcard search like we want.

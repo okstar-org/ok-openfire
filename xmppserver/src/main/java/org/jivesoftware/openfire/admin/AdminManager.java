@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -84,7 +84,7 @@ public class AdminManager {
     private static AdminProvider provider;
 
     /**
-     * Constructs a AdminManager, propery listener, and setting up the provider.
+     * Constructs a AdminManager, property listener, and setting up the provider.
      */
     private AdminManager() {
         // Load an admin provider.
@@ -102,10 +102,10 @@ public class AdminManager {
         });
     }
 
-    private static void initProvider(final Class clazz) {
+    private static void initProvider(final Class<? extends AdminProvider> clazz) {
         if (provider == null || !clazz.equals(provider.getClass())) {
             try {
-                provider = (AdminProvider) clazz.newInstance();
+                provider = clazz.newInstance();
             }
             catch (Exception e) {
                 Log.error("Error loading admin provider: " + clazz.getName(), e);
@@ -122,7 +122,7 @@ public class AdminManager {
     }
 
     /**
-     * Refreshs the list of admin users from the provider.
+     * Refreshes the list of admin users from the provider.
      */
     public void refreshAdminAccounts() {
         loadAdminList();

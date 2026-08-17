@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,31 +24,36 @@ import io.netty.handler.codec.compression.JZlibEncoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.traffic.ChannelTrafficShapingHandler;
+import io.netty.util.AttributeKey;
 import org.jivesoftware.openfire.Connection;
 import org.jivesoftware.openfire.PacketDeliverer;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
 import org.jivesoftware.openfire.net.AbstractConnection;
 import org.jivesoftware.openfire.net.ServerTrafficCounter;
 import org.jivesoftware.openfire.net.StanzaHandler;
+import org.jivesoftware.openfire.session.DomainPair;
 import org.jivesoftware.openfire.session.LocalSession;
 import org.jivesoftware.openfire.session.Session;
 import org.jivesoftware.openfire.spi.ConnectionConfiguration;
 import org.jivesoftware.openfire.spi.EncryptionArtifactFactory;
+import org.jivesoftware.util.channelbinding.ChannelBindingProviderManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.Packet;
 import org.xmpp.packet.StreamError;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.security.cert.Certificate;
+import java.util.Collections;
 import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.jcraft.jzlib.JZlib.Z_BEST_COMPRESSION;
@@ -65,6 +70,7 @@ public class NettyConnection extends AbstractConnection
 {
     private static final Logger Log = LoggerFactory.getLogger(NettyConnection.class);
     public static final String SSL_HANDLER_NAME = "ssl";
+    public static final AttributeKey<DomainPair> DOMAIN_PAIR = AttributeKey.valueOf("OF_OUTBOUND_DOMAIN_PAIR");
     private final ConnectionConfiguration configuration;
     private final ChannelHandlerContext channelHandlerContext;
 
@@ -85,10 +91,13 @@ public class NettyConnection extends AbstractConnection
     private final AtomicReference<State> state = new AtomicReference<>(State.OPEN);
     private boolean isEncrypted = false;
 
+    private ChannelBindingProviderManager channelBindingProviderManager; // TODO allow this to be set for unit testing.
+
     public NettyConnection(ChannelHandlerContext channelHandlerContext, @Nullable PacketDeliverer packetDeliverer, ConnectionConfiguration configuration ) {
         this.channelHandlerContext = channelHandlerContext;
         this.backupDeliverer = packetDeliverer;
         this.configuration = configuration;
+        this.channelBindingProviderManager = ChannelBindingProviderManager.getInstance();
     }
 
     @Override
@@ -98,6 +107,10 @@ public class NettyConnection extends AbstractConnection
         }
         deliverRawText(" ");
         return !isClosed();
+    }
+
+    public SocketAddress getPeer() {
+        return channelHandlerContext.channel().remoteAddress();
     }
 
     @Override
@@ -116,6 +129,24 @@ public class NettyConnection extends AbstractConnection
         final InetSocketAddress socketAddress = (InetSocketAddress) remoteAddress;
         final InetAddress inetAddress = socketAddress.getAddress();
         return inetAddress.getHostAddress();
+    }
+
+    @Override
+    public int getRemotePort() {
+        final SocketAddress remoteAddress = channelHandlerContext.channel().remoteAddress();
+        if (remoteAddress instanceof InetSocketAddress) {
+            return ((InetSocketAddress) remoteAddress).getPort();
+        }
+        return 0;
+    }
+
+    @Override
+    public int getLocalPort() {
+        final SocketAddress localAddress = channelHandlerContext.channel().localAddress();
+        if (localAddress instanceof InetSocketAddress) {
+            return ((InetSocketAddress) localAddress).getPort();
+        }
+        return 0;
     }
 
     @Override
@@ -188,65 +219,54 @@ public class NettyConnection extends AbstractConnection
     }
 
     @Override
-    public void close(@Nullable final StreamError error, final boolean networkInterruption) {
+    public void close(@Nullable final StreamError error) {
         if (state.compareAndSet(State.OPEN, State.CLOSED)) {
             Log.trace("Closing {} with optional error: {}", this, error);
 
             ChannelFuture f;
 
             if (session != null) {
-
-                if (!networkInterruption) {
-                    // A 'clean' closure should never be resumed (OF-2752).
+                // If the stream was ended because of an error, it should not be possible to resume it (OF-2751).
+                if (error != null) {
                     session.getStreamManager().formalClose();
                 }
 
                 // Ensure that the state of this connection, its session and the Netty Channel are eventually closed.
                 session.setStatus(Session.Status.CLOSED);
 
-                // Only send errors or stream closures if the open <stream:stream> occurred, inferred by having a session.
-                // TODO: Are there edge cases here?
-                String rawEndStream = "";
-                if (error != null) {
-                    rawEndStream = error.toXML();
+                // Only attempt to write the stream close if the channel is still active. If connectivity was lost
+                // (e.g., the socket was closed by the peer or a network error), the channel will already be inactive
+                // and there is no point in attempting a write, as it would only produce noisy ClosedChannelException
+                // log entries. The cleanup listeners must still run either way. OF-3195
+                if (channelHandlerContext.channel().isActive()) {
+                    String rawEndStream = "";
+                    if (error != null) {
+                        rawEndStream = error.toXML();
+                    }
+                    rawEndStream += "</stream:stream>";
+                    f = channelHandlerContext.writeAndFlush(rawEndStream);
+                } else {
+                    Log.trace("Channel is no longer active; skipping stream close stanza for {}", this);
+                    f = channelHandlerContext.newSucceededFuture();
                 }
-                rawEndStream += "</stream:stream>";
-
-                f = channelHandlerContext.writeAndFlush(rawEndStream);
             } else {
                 f = channelHandlerContext.newSucceededFuture();
             }
 
-            // OF-2808: Ensure that the connection is done invoking its 'close' listeners before returning from this
-            // method, otherwise stream management's "resume" functionality breaks (the 'close' listeners have been
-            // observed to act on a newly attached stream/connection, instead of the old one).
-            final CountDownLatch latch = new CountDownLatch(1);
-            try {
-                    f.addListener(e -> Log.trace("Flushed any final bytes, closing connection."))
-                    .addListener(ChannelFutureListener.CLOSE)
-                    .addListener(e -> {
-                        Log.trace("Notifying close listeners.");
-                        try {
-                            notifyCloseListeners();
+            f.addListener(e -> Log.trace("Flushed any final bytes, closing connection."))
+                .addListener(ChannelFutureListener.CLOSE)
+                .addListener(e -> {
+                    Log.trace("Notifying close listeners.");
+                    notifyCloseListeners()
+                        .whenComplete((v,t) -> {
                             closeListeners.clear();
-                        } finally {
-                            latch.countDown();
-                        }
-                    })
-                    .addListener(e -> Log.trace("Finished closing connection."))
-                    .sync(); // TODO: OF-2811 Remove this blocking operation (which may have been made redundant by the fix for OF-2808 anyway).
-            } catch (Throwable t) {
-                Log.error("Problem during connection close or cleanup", t);
-                latch.countDown(); // Ensure we're not kept waiting! OF-2845
-            }
-            try {
-                // TODO: OF-2811 Remove this blocking operation, by allowing the invokers of this method to use a Future.
-                if (!latch.await(10, TimeUnit.MINUTES)) {
-                    Log.warn("Timed out waiting for close listeners to complete.");
-                }
-            } catch (InterruptedException e) {
-                Log.debug("Stopped waiting on connection being closed, as an interrupt happened.", e);
-            }
+                            if (t != null) {
+                                Log.warn("Exception while invoking close listeners for {}", this, t);
+                            }
+                            completeCloseFuture();
+                        });
+                })
+                .addListener(e -> Log.trace("Finished closing connection."));
         }
     }
 
@@ -344,7 +364,7 @@ public class NettyConnection extends AbstractConnection
     private void updateWrittenBytesCounter(ChannelHandlerContext ctx) {
         ChannelTrafficShapingHandler handler = (ChannelTrafficShapingHandler) ctx.channel().pipeline().get(TRAFFIC_HANDLER_NAME);
         if (handler != null) {
-            long currentBytes = handler.trafficCounter().lastWrittenBytes();
+            long currentBytes = handler.trafficCounter().currentWrittenBytes();
             Long prevBytes = ctx.channel().attr(WRITTEN_BYTES).get();
             long delta;
             if (prevBytes == null) {
@@ -365,10 +385,13 @@ public class NettyConnection extends AbstractConnection
         if (clientMode) {
             final SslContext sslContext = factory.createClientModeSslContext();
 
-            // OF-2738: Send along the XMPP domain that's needed for SNI
-            final NettyOutboundConnectionHandler handler = channelHandlerContext.channel().pipeline().get(NettyOutboundConnectionHandler.class);
-
-            sslHandler = sslContext.newHandler(channelHandlerContext.alloc(), handler.getDomainPair().getRemote(), handler.getPort());
+            // OF-2738: the remote XMPP domain is needed for SNI. It is read from a channel attribute (set when the
+            // outbound connection is initialised) rather than from the pipeline to prevent an NPE (see OF-3332).
+            final DomainPair domainPair = channelHandlerContext.channel().attr(DOMAIN_PAIR).get();
+            if (domainPair == null) {
+                throw new IllegalStateException("Unable to start TLS in client mode: no remote domain is associated with connection " + this);
+            }
+            sslHandler = sslContext.newHandler(channelHandlerContext.alloc(), domainPair.getRemote(), getRemotePort());
         } else {
             final SslContext sslContext = factory.createServerModeSslContext(directTLS);
             sslHandler = sslContext.newHandler(channelHandlerContext.alloc());
@@ -412,6 +435,28 @@ public class NettyConnection extends AbstractConnection
     @Override
     public boolean isCompressed() {
         return channelHandlerContext.channel().pipeline().get(JZlibDecoder.class) != null;
+    }
+
+    @Override
+    public Optional<byte[]> getChannelBindingData(@Nonnull final String cbPrefix)
+    {
+        final SslHandler sslhandler = (SslHandler) channelHandlerContext.channel().pipeline().get(SSL_HANDLER_NAME);
+        if (sslhandler == null) {
+            return Optional.empty();
+        }
+
+        final SSLEngine engine = sslhandler.engine();
+        return channelBindingProviderManager.getChannelBinding(cbPrefix, engine);
+    }
+
+    @Override
+    public Set<String> getSupportedChannelBindingTypes()
+    {
+        final SslHandler sslhandler = (SslHandler) channelHandlerContext.channel().pipeline().get(SSL_HANDLER_NAME);
+        if (sslhandler == null) {
+            return Collections.emptySet();
+        }
+        return channelBindingProviderManager.getSupportedChannelBindingTypes();
     }
 
     @Override

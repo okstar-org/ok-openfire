@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,10 @@ import javax.annotation.Nullable;
 import java.io.Closeable;
 import java.net.UnknownHostException;
 import java.security.cert.Certificate;
+import java.util.Collections;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletionStage;
 
 /**
  * Represents a connection on the server.
@@ -136,9 +138,70 @@ public interface Connection extends Closeable {
     Certificate[] getPeerCertificates();
 
     /**
-     * Keeps track if the other peer of this session presented a self-signed certificate. When
-     * using self-signed certificate for server-2-server sessions then SASL EXTERNAL will not be
-     * used and instead server-dialback will be preferred for vcerifying the identify of the remote
+     * Returns channel binding data for this connection, as defined by the provided type.
+     *
+     * Channel binding data is used to bind higher-level authentication to the underlying transport layer, improving
+     * security against man-in-the-middle attacks.
+     *
+     * The type, identified by a unique prefix that's typically defined in an RFC, determines which channel binding
+     * mechanism is used, such as:
+     * <ul>
+     *     <li><code>tls-exporter</code>: TLS exporter-based channel binding.</li>
+     *     <li><code>tls-server-end-point</code>: Uses the hash of the server certificate (RFC 5929).</li>
+     * </ul>
+     *
+     * Note that channel binding type prefixes are case-sensitive.
+     *
+     * If the connection is not encrypted, or the requested channel binding type is not available, returns {@link Optional#empty()}.
+     *
+     * @param cbPrefix the RFC-defined unique prefix for the channel binding type (must not be null)
+     * @return An Optional containing the channel binding data, or empty if not available.
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc5705">RFC 5705: Keying Material Exporters for Transport Layer Security (TLS)</a>
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc5929">RFC 5929: Channel Bindings for TLS</a>
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc9266">RFC 9266: Channel Bindings for TLS 1.3</a>
+     */
+    default Optional<byte[]> getChannelBindingData(@Nonnull final String cbPrefix) {
+        return Optional.empty();
+    }
+
+    /**
+     * Returns the unique prefixes of the channel binding types that are supported by this connection in its current
+     * state. Notably, this may change if the connection is encrypted or if the underlying TLS implementation changes.
+     * When no channel binding types are supported, an empty set is returned.
+     *
+     * <b>Implementation note:</b> This method is used to determine if SASL -PLUS mechanisms (such as SCRAM-SHA-1-PLUS)
+     * should be offered to the client. If channel binding is not supported in the current state (e.g., not encrypted,
+     * or the connection type does not support channel binding), this method <b>must</b> return an empty set.
+     *
+     * @return supported channel binding types.
+     */
+    default Set<String> getSupportedChannelBindingTypes()
+    {
+        return Collections.emptySet();
+    }
+
+    /**
+     * Returns the TCP port on the remote peer used by the connection.
+     *
+     * @return the remote port, or 0 when unavailable.
+     */
+    default int getRemotePort() {
+        return 0;
+    }
+
+    /**
+     * Returns the TCP port on the local host to which the connection is connected.
+     *
+     * @return the local port, or 0 when unavailable.
+     */
+    default int getLocalPort() {
+        return 0;
+    }
+
+    /**
+     * Keeps track of whether the other peer of this session presented a self-signed certificate. When
+     * using a self-signed certificate for server-to-server sessions, SASL EXTERNAL will not be
+     * used and instead server dialback will be preferred for verifying the identity of the remote
      * server.
      *
      * @param isSelfSigned true if the other peer presented a self-signed certificate.
@@ -148,7 +211,7 @@ public interface Connection extends Closeable {
     /**
      * Returns true if the other peer of this session presented a self-signed certificate. When
      * using self-signed certificate for server-2-server sessions then SASL EXTERNAL will not be
-     * used and instead server-dialback will be preferred for vcerifying the identify of the remote
+     * used and instead server-dialback will be preferred for verifying the identify of the remote
      * server.
      *
      * @return true if the other peer of this session presented a self-signed certificate.
@@ -174,30 +237,7 @@ public interface Connection extends Closeable {
      */
     @Override
     default void close() {
-        close(null, false);
-    }
-
-    /**
-     * Close this connection including associated session, optionally citing a stream error. The events for closing
-     * the connection are:
-     *
-     * <ul>
-     *      <li>Set closing flag to prevent redundant shutdowns.
-     *      <li>Close the socket.
-     *      <li>Notify all listeners that the channel is shut down.
-     * </ul>
-     *
-     * Not all implementations use the same order of events.
-     *
-     * Invocation of this method is expected to occur when a coordinated, 'clean' disconnect occurs. Such disconnects
-     * are expected to be user (or server) initiated. As a result, a session closed by this method is not resumable,
-     * even if Stream Management was activated for this session. Refer to {@link #close(StreamError, boolean)} for
-     * processing of unexpected disconnects (that <em>are</em> potentially resumable).
-     *
-     * @param error If non-null, the end-stream tag will be preceded with this error.
-     */
-    default void close(@Nullable final StreamError error) {
-        close(error, false);
+        close(null);
     }
 
     /**
@@ -222,7 +262,7 @@ public interface Connection extends Closeable {
      *
      * @param error If non-null, the end-stream tag will be preceded with this error.
      */
-    void close(@Nullable final StreamError error, final boolean networkInterruption);
+    void close(@Nullable final StreamError error);
 
     /**
      * Notification message indicating that the server is being shutdown. Implementors
@@ -232,9 +272,13 @@ public interface Connection extends Closeable {
     void systemShutdown();
 
     /**
-     * Returns true if the connection/session is closed.
+     * Returns true if this connection is in the process of closing or has been closed.
      *
-     * @return true if the connection is closed.
+     * Note that a return value of {@code true} does not mean teardown is complete. Physical transport closure and
+     * {@link ConnectionCloseListener} notification may still be in progress. Use {@link #getCloseFuture()} to be
+     * notified when all close processing has finished.
+     *
+     * @return true if the connection is closed or closing.
      */
     boolean isClosed();
 
@@ -267,6 +311,27 @@ public interface Connection extends Closeable {
      * @param listener the listener to deregister for close events.
      */
     void removeCloseListener( ConnectionCloseListener listener );
+
+    /**
+     * Returns a stage that completes when ALL close operations for this connection have finished, including the
+     * physical transport closure and the invocation of all registered {@link ConnectionCloseListener} instances.
+     *
+     * The stage completes normally with {@code null} regardless of whether individual close listeners encountered
+     * errors. Listener errors are logged but do not cause the stage to complete exceptionally.
+     *
+     * Callers that must not establish a replacement connection until this one is fully torn down (e.g. to prevent
+     * duplicate session conflicts in server-to-server scenarios) should chain on this stage rather than relying on
+     * {@link #isClosed()} alone. {@code isClosed()} returning {@code true} only indicates that the <em>intent</em>
+     * to close has been recorded; teardown may still be in progress.
+     *
+     * The stage will only complete if {@link #close()} or {@link #close(StreamError)} is eventually invoked.
+     * Callers that choose to await this stage should account for the possibility that close is never called on
+     * abandoned connections.
+     *
+     * @return a {@link CompletionStage} that completes once all close processing is done. The returned stage is
+     *         read-only; it cannot be used to externally trigger or cancel the close sequence.
+     */
+    CompletionStage<Void> getCloseFuture();
 
     /**
      * Delivers the packet to this connection without checking the recipient.

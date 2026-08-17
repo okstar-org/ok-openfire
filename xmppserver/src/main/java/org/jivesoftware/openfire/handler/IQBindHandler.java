@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,24 +18,21 @@ package org.jivesoftware.openfire.handler;
 
 import org.dom4j.Element;
 import org.jivesoftware.openfire.IQHandlerInfo;
-import org.jivesoftware.openfire.RoutingTable;
 import org.jivesoftware.openfire.SessionManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.auth.AuthToken;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
 import org.jivesoftware.openfire.event.SessionEventDispatcher;
-import org.jivesoftware.openfire.session.ClientSession;
 import org.jivesoftware.openfire.session.LocalClientSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.IQ;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.PacketError;
-import org.xmpp.packet.StreamError;
 
 /**
  * Binds a resource to the stream so that the client's address becomes a full JID. Once a resource
- * has been binded to the session the entity (i.e. client) is considered a "connected resource".
+ * has been bound to the session the entity (i.e. client) is considered a "connected resource".
  * <p>
  * Clients may specify a desired resource but if none was specified then the server will create
  * a random resource for the session. The new resource should be in accordance with ResourcePrep.
@@ -51,7 +48,6 @@ public class IQBindHandler extends IQHandler {
 
     private IQHandlerInfo info;
     private String serverName;
-    private RoutingTable routingTable;
 
     public IQBindHandler() {
         super("Resource Binding handler");
@@ -71,12 +67,9 @@ public class IQBindHandler extends IQHandler {
             return reply;
         }
 
-        IQ reply = IQ.createResultIQ(packet);
-        reply.setFrom((String)null); // OF-2001: IQ bind requests are made from entities that have no resource yet. Responding with a 'from' value confuses many clients.
-        Element child = reply.setChildElement("bind", "urn:ietf:params:xml:ns:xmpp-bind");
         // Check if the client specified a desired resource
         String resource = packet.getChildElement().elementTextTrim("resource");
-        if (resource == null || resource.length() == 0) {
+        if (resource == null || resource.isEmpty()) {
             // None was defined so use the random generated resource
             resource = session.getAddress().getResource();
         }
@@ -86,10 +79,7 @@ public class IQBindHandler extends IQHandler {
                 resource = JID.resourceprep(resource);
             }
             catch (IllegalArgumentException e) {
-                reply.setChildElement(packet.getChildElement().createCopy());
-                reply.setError(PacketError.Condition.jid_malformed);
-                // Send the error directly since a route does not exist at this point.
-                session.process(reply);
+                sendBindError(session, packet, PacketError.Condition.jid_malformed);
                 return null;
             }
         }
@@ -97,74 +87,79 @@ public class IQBindHandler extends IQHandler {
         AuthToken authToken = session.getAuthToken();
         if (authToken == null) {
             // User must be authenticated before binding a resource
-            reply.setChildElement(packet.getChildElement().createCopy());
-            reply.setError(PacketError.Condition.not_authorized);
-            // Send the error directly since a route does not exist at this point.
-            session.process(reply);
-            return reply;
+            sendBindError(session, packet, PacketError.Condition.not_authorized);
+            return null;
         }
         if (authToken.isAnonymous()) {
-            // User used ANONYMOUS SASL so initialize the session as an anonymous login
+            // ANONYMOUS SASL: resource is server-generated and unique, so there is no conflict to resolve. Initialize the anonymous login and complete the bind synchronously.
             session.setAnonymousAuth();
+            sendBindSuccess(session, packet);
+            return null;
         }
-        else {
-            String username = authToken.getUsername().toLowerCase();
-            // If a session already exists with the requested JID, then check to see
-            // if we should kick it off or refuse the new connection
-            ClientSession oldSession = routingTable.getClientRoute(new JID(username, serverName, resource, true));
-            if (oldSession != null) {
+
+        final String username = authToken.getUsername().toLowerCase();
+        final JID desiredJid = new JID(username, serverName, resource, true);
+
+        // Resolve any live conflict and install the route atomically, off this worker thread to prevent thread starvation (OF-3319).
+        sessionManager.bindResource(session, authToken, resource)
+            .whenComplete((result, throwable) -> {
                 try {
-                    int conflictLimit = sessionManager.getConflictKickLimit();
-                    if (conflictLimit == SessionManager.NEVER_KICK) {
-                        reply.setChildElement(packet.getChildElement().createCopy());
-                        reply.setError(PacketError.Condition.conflict);
-                        // Send the error directly since a route does not exist at this point.
-                        session.process(reply);
-                        return null;
+                    if (throwable != null)
+                    {
+                        Log.error("Unexpected error during resource-binding conflict resolution for '{}'", desiredJid, throwable);
+                        sendBindError(session, packet, PacketError.Condition.internal_server_error);
                     }
-
-                    int conflictCount = oldSession.incrementConflictCount();
-                    if (conflictCount > conflictLimit) {
-                        Log.debug( "Kick out an old connection that is conflicting with a new one. Old session: {}", oldSession );
-                        StreamError error = new StreamError(StreamError.Condition.conflict);
-                        oldSession.deliverRawText(error.toXML());
-                        oldSession.close(); // When living on a remote cluster node, this will prevent that session from becoming 'resumable'.
-
-                        // OF-1923: As the session is now replaced, the old session will never be resumed.
-                        if ( oldSession instanceof LocalClientSession ) {
-                            // As the new session has already replaced the old session, we're not explicitly closing
-                            // the old session again, as that would cause the state of the new session to be affected.
-                            sessionManager.removeDetached((LocalClientSession) oldSession);
-                        }
+                    else if (result == SessionManager.BindResult.BOUND)
+                    {
+                        Log.debug("Successful resource bind for '{}'.", desiredJid);
+                        sendBindSuccess(session, packet);
                     }
-                    else {
-                        reply.setChildElement(packet.getChildElement().createCopy());
-                        reply.setError(PacketError.Condition.conflict);
-                        // Send the error directly since a route does not exist at this point.
-                        session.process(reply);
-                        return null;
+                    else
+                    {
+                        Log.debug("Rejecting resource bind for '{}' with 'conflict'.", desiredJid);
+                        sendBindError(session, packet, PacketError.Condition.conflict);
                     }
+                } catch (final Exception e) {
+                    Log.error("Failed to deliver resource-bind response for '{}'", desiredJid, e);
                 }
-                catch (Exception e) {
-                    Log.error("Error during login", e);
-                }
-            }
-            // If the connection was not refused due to conflict, log the user in
-            session.setAuthToken(authToken, resource);
-        }
+            });
+        return null; // Response is sent asynchronously from the completion stage above.
+    }
 
+    /**
+     * Sends a successful resource-binding result to the session and dispatches the resource_bound event.
+     */
+    private void sendBindSuccess(final LocalClientSession session, final IQ request)
+    {
+        final IQ reply = IQ.createResultIQ(request);
+        reply.setFrom((String) null); // OF-2001
+        final Element child = reply.setChildElement("bind", "urn:ietf:params:xml:ns:xmpp-bind");
         child.addElement("jid").setText(session.getAddress().toString());
+
         // Send the response directly since a route does not exist at this point.
         session.process(reply);
+
         // After the client has been informed, inform all listeners as well.
         SessionEventDispatcher.dispatchEvent(session, SessionEventDispatcher.EventType.resource_bound);
-        return null;
+    }
+
+    /**
+     * Sends a resource-binding error to the session.
+     */
+    private void sendBindError(final LocalClientSession session, final IQ request, final PacketError.Condition condition)
+    {
+        final IQ reply = IQ.createResultIQ(request);
+        reply.setFrom((String) null); // OF-2001
+        reply.setChildElement(request.getChildElement().createCopy());
+        reply.setError(condition);
+
+        // Sent directly on the session, as a route does not exist for a not-yet-bound session.
+        session.process(reply);
     }
 
     @Override
     public void initialize(XMPPServer server) {
         super.initialize(server);
-        routingTable = server.getRoutingTable();
         serverName = server.getServerInfo().getXMPPDomain();
      }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2009 Jive Software, 2021-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2007-2009 Jive Software, 2021-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +51,8 @@ public abstract class RemoteSession implements Session {
     private String serverName;
     private String hostAddress;
     private String hostName;
+    private int remotePort = -1;
+    private int localPort = -1;
 
     public RemoteSession(byte[] nodeID, JID address) {
         this.nodeID = nodeID;
@@ -151,6 +153,13 @@ public abstract class RemoteSession implements Session {
         return clusterTaskResult == null ? false : (Boolean) clusterTaskResult;
     }
 
+    @Override
+    public boolean isDetached() {
+        ClusterTask<Object> task = getRemoteSessionTask(RemoteSessionTask.Operation.isDetached);
+        final Object clusterTaskResult = doSynchronousClusterTask(task);
+        return clusterTaskResult == null ? false : (Boolean) clusterTaskResult;
+    }
+
     public boolean isEncrypted() {
         ClusterTask<Object> task = getRemoteSessionTask(RemoteSessionTask.Operation.isEncrypted);
         final Object clusterTaskResult = doSynchronousClusterTask(task);
@@ -173,8 +182,32 @@ public abstract class RemoteSession implements Session {
         return hostName;
     }
 
+    @Override
+    public int getRemotePort() {
+        if (remotePort == -1) {
+            final ClusterTask<Object> task = getRemoteSessionTask(RemoteSessionTask.Operation.getRemotePort);
+            final Object result = doSynchronousClusterTask(task);
+            remotePort = result instanceof Integer ? (Integer) result : 0;
+        }
+        return remotePort;
+    }
+
+    @Override
+    public int getLocalPort() {
+        if (localPort == -1) {
+            final ClusterTask<Object> task = getRemoteSessionTask(RemoteSessionTask.Operation.getLocalPort);
+            final Object result = doSynchronousClusterTask(task);
+            localPort = result instanceof Integer ? (Integer) result : 0;
+        }
+        return localPort;
+    }
+
     public void deliverRawText(String text) {
         doClusterTask(getDeliverRawTextTask(text));
+    }
+
+    public void markNonResumable() {
+        doSynchronousClusterTask(getRemoteSessionTask(RemoteSessionTask.Operation.markNonResumable));
     }
 
     public boolean validate() {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,10 @@ import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
 import org.dom4j.QName;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
+import org.jivesoftware.openfire.ratelimit.NewConnectionLimiterRegistry;
+import org.jivesoftware.openfire.spi.ConnectionType;
 import org.jivesoftware.util.JiveGlobals;
+import org.jivesoftware.util.TokenBucketRateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,7 +81,7 @@ public class HttpBindServlet extends HttpServlet {
                 response.setHeader("Access-Control-Allow-Origin", HttpBindManager.HTTP_BIND_CORS_ALLOW_ORIGIN_ALL);
             } else {
                 // Get the Origin header from the request and check if it is in the allowed Origin Map.
-                // If it is allowed write it back to the Access-Control-Allow-Origin header of the respond.
+                // If it is allowed write it back to the Access-Control-Allow-Origin header of the response.
                 final String origin = request.getHeader("Origin");
                 if (boshManager.isThisOriginAllowed(origin)) {
                     response.setHeader("Access-Control-Allow-Origin", origin);
@@ -106,7 +109,7 @@ public class HttpBindServlet extends HttpServlet {
         }
 
         String queryString = request.getQueryString();
-        if (queryString == null || "".equals(queryString)) {
+        if (queryString == null || queryString.isEmpty()) {
             sendLegacyError(context, BoshBindingError.badRequest);
             return;
         } else if ("isBoshAvailable".equals(queryString)) {
@@ -114,7 +117,7 @@ public class HttpBindServlet extends HttpServlet {
             context.complete();
             return;
         }
-        queryString = URLDecoder.decode(queryString, "UTF-8");
+        queryString = URLDecoder.decode(queryString, StandardCharsets.UTF_8);
 
         processContent(context, queryString);
     }
@@ -141,14 +144,14 @@ public class HttpBindServlet extends HttpServlet {
         try {
             body = HttpBindBody.from( content );
         } catch (Exception ex) {
-            Log.warn("Error parsing request data from [" + remoteAddress + "]", ex);
+            Log.warn("Error parsing request data from [{}]", remoteAddress, ex);
             sendLegacyError(context, BoshBindingError.badRequest);
             return;
         }
 
         final Long rid = body.getRid();
         if (rid == null || rid <= 0) {
-            Log.info("Root element 'body' does not contain a valid RID attribute value in parsed request data from [" + remoteAddress + "]");
+            Log.info("Root element 'body' does not contain a valid RID attribute value in parsed request data from [{}]", remoteAddress);
             sendLegacyError(context, BoshBindingError.badRequest, "Body-element is missing a RID (Request ID) value, or the provided value is a non-positive integer.");
             return;
         }
@@ -159,7 +162,7 @@ public class HttpBindServlet extends HttpServlet {
             // something is wrong.
             if (!body.isEmpty()) {
                 // invalid session request; missing sid
-                Log.info("Root element 'body' does not contain a SID attribute value in parsed request data from [" + remoteAddress + "]");
+                Log.info("Root element 'body' does not contain a SID attribute value in parsed request data from [{}]", remoteAddress);
                 sendLegacyError(context, BoshBindingError.badRequest);
                 return;
             }
@@ -175,6 +178,15 @@ public class HttpBindServlet extends HttpServlet {
 
     protected void createNewSession(AsyncContext context, HttpBindBody body) throws IOException
     {
+        // Rate limiting is applied per logical connection category (e.g., client-to-server, server-to-server),
+        // with unlimited limiters for unsupported or disabled categories.
+        final TokenBucketRateLimiter limiter = NewConnectionLimiterRegistry.getLimiter(ConnectionType.BOSH_C2S);
+        if (!limiter.tryAcquire()) {
+            NewConnectionLimiterRegistry.maybeLogRejection(ConnectionType.BOSH_C2S);
+            sendLegacyError(context, BoshBindingError.policyViolation, "Too many new connections; please try again later.");
+            return;
+        }
+
         try {
             final HttpConnection connection = new HttpConnection(body, context);
 
@@ -184,7 +196,7 @@ public class HttpBindServlet extends HttpServlet {
             connection.setSession(session);
 
             if (HttpBindManager.LOG_HTTPBIND_ENABLED.getValue()) {
-                Log.info("HTTP RECV(" + session.getStreamID().getID() + "): " + body.asXML());
+                Log.info("HTTP RECV({}): {}", session.getStreamID().getID(), body.asXML());
             }
 
             SessionEventDispatcher.dispatchEvent( connection.getSession(), SessionEventDispatcher.EventType.post_session_created, connection, context );
@@ -200,15 +212,12 @@ public class HttpBindServlet extends HttpServlet {
     {
         final String sid = body.getSid();
         if (HttpBindManager.LOG_HTTPBIND_ENABLED.getValue()) {
-            Log.info("HTTP RECV(" + sid + "): " + body.asXML());
+            Log.info("HTTP RECV({}): {}", sid, body.asXML());
         }
 
         HttpSession session = sessionManager.getSession(sid);
         if (session == null) {
-            if (Log.isDebugEnabled()) {
-                Log.debug("Client provided invalid session: " + sid + ". [" +
-                    context.getRequest().getRemoteAddr() + "]");
-            }
+            Log.debug("Client provided invalid session: {}. [{}]", sid, context.getRequest().getRemoteAddr());
             sendLegacyError(context, BoshBindingError.itemNotFound, "Invalid SID value.");
             return;
         }
@@ -247,7 +256,7 @@ public class HttpBindServlet extends HttpServlet {
         }
         
         if (HttpBindManager.LOG_HTTPBIND_ENABLED.getValue()) {
-            Log.info("HTTP SENT(" + session.getStreamID().getID() + "): " + content);
+            Log.info("HTTP SENT({}): {}", session.getStreamID().getID(), content);
         }
 
         final byte[] byteContent = content.getBytes(StandardCharsets.UTF_8);
@@ -282,6 +291,7 @@ public class HttpBindServlet extends HttpServlet {
         finally {
             if (bindingError.getErrorType() == BoshBindingError.Type.terminate) {
                 Log.debug( "Closing session due to error: {}. Affected session: {}", bindingError, session );
+                session.markNonResumable();
                 session.close();
             }
         }
@@ -291,7 +301,7 @@ public class HttpBindServlet extends HttpServlet {
             throws IOException
     {
         final HttpServletResponse response = (HttpServletResponse) context.getResponse();
-        if (message == null || message.trim().length() == 0) {
+        if (message == null || message.trim().isEmpty()) {
             response.sendError(error.getLegacyErrorCode());
         } else {
             response.sendError(error.getLegacyErrorCode(), message);
@@ -319,7 +329,7 @@ public class HttpBindServlet extends HttpServlet {
             remoteAddress = context.getRequest().getRemoteAddr();
         }
 
-        if (remoteAddress == null || remoteAddress.trim().length() == 0) {
+        if (remoteAddress == null || remoteAddress.trim().isEmpty()) {
             remoteAddress = "<UNKNOWN ADDRESS>";
         }
 
@@ -339,9 +349,7 @@ public class HttpBindServlet extends HttpServlet {
 
         @Override
         public void onDataAvailable() throws IOException {
-            if( Log.isTraceEnabled() ) {
-                Log.trace("Data is available to be read from [" + remoteAddress + "]");
-            }
+            Log.trace("Data is available to be read from [{}]", remoteAddress);
 
             final ServletInputStream inputStream = context.getRequest().getInputStream();
 
@@ -354,21 +362,17 @@ public class HttpBindServlet extends HttpServlet {
 
         @Override
         public void onAllDataRead() throws IOException {
-            if( Log.isTraceEnabled() ) {
-                Log.trace("All data has been read from [" + remoteAddress + "]");
-            }
-            processContent(context, outStream.toString(StandardCharsets.UTF_8.name()));
+            Log.trace("All data has been read from [{}]", remoteAddress);
+            processContent(context, outStream.toString(StandardCharsets.UTF_8));
         }
 
         @Override
         public void onError(Throwable throwable) {
-            if( Log.isWarnEnabled() ) {
-                Log.warn("Error reading request data from [" + remoteAddress + "]", throwable);
-            }
+            Log.warn("Error reading request data from [{}]", remoteAddress, throwable);
             try {
                 sendLegacyError(context, BoshBindingError.badRequest);
             } catch (IOException ex) {
-                Log.debug("Error while sending an error to ["+remoteAddress +"] in response to an earlier data-read failure.", ex);
+                Log.debug("Error while sending an error to [{}] in response to an earlier data-read failure.", remoteAddress, ex);
             }
         }
     }
@@ -390,9 +394,7 @@ public class HttpBindServlet extends HttpServlet {
             // This method may be invoked multiple times and by different threads, e.g. when writing large byte arrays.
             // Make sure a write/complete operation is only done, if no other write is pending, i.e. if isReady() == true
             // Otherwise WritePendingException is thrown.
-            if( Log.isTraceEnabled() ) {
-                Log.trace("Data can be written to [" + remoteAddress + "]");
-            }
+            Log.trace("Data can be written to [{}]", remoteAddress);
             synchronized ( context )
             {
                 final ServletOutputStream servletOutputStream = context.getResponse().getOutputStream();
@@ -419,9 +421,7 @@ public class HttpBindServlet extends HttpServlet {
 
         @Override
         public void onError(Throwable throwable) {
-            if( Log.isWarnEnabled() ) {
-                Log.warn("Error writing response data to [" + remoteAddress + "]", throwable);
-            }
+            Log.warn("Error writing response data to [{}]", remoteAddress, throwable);
             synchronized ( context )
             {
                 context.complete();

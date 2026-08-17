@@ -1,6 +1,6 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
-  - Copyright (C) 2005-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -98,7 +98,7 @@
         service.setDebugEnabled(debug);
         service.setSSLEnabled(ssl);
 
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             // Log the event
             webManager.logEvent("updated email service settings", "host = "+host+"\nport = "+port+"\nusername = "+username);
             // Set property to specify email is configured
@@ -126,7 +126,7 @@
 <fmt:message key="system.email.info" />
 </p>
 
-<%  if ("true".equals(request.getParameter("success"))) { %>
+<%  if (ParamUtils.getBooleanParameter(request, "success")) { %>
 
     <admin:infoBox type="success">
         <fmt:message key="system.email.update_success" />
@@ -134,7 +134,7 @@
 
 <%  } %>
 
-<%  if (errors.size() > 0) { %>
+<%  if (!errors.isEmpty()) { %>
 
     <admin:infoBox type="error">
         <fmt:message key="system.email.update_failure" />
@@ -157,7 +157,7 @@
                 <label for="host"><fmt:message key="system.email.mail_host" />:</label>
             </td>
             <td nowrap>
-                <input type="text" id="host" name="host" value="<%= (host != null)? StringUtils.escapeForXML(host):"" %>" size="40" maxlength="150">
+                <input type="text" id="host" name="host" value="<%= StringUtils.escapeForXML(host) %>" size="40" maxlength="150">
             </td>
         </tr>
 
@@ -202,7 +202,7 @@
                 <label for="server_username"><fmt:message key="system.email.server_username" />:</label>
             </td>
             <td nowrap>
-                <input type="text" id="server_username" name="server_username" value="<%= (username != null) ? StringUtils.escapeForXML(username) : "" %>" size="40" maxlength="150">
+                <input type="text" id="server_username" name="server_username" value="<%= StringUtils.escapeForXML(username) %>" size="40" maxlength="150">
             </td>
         </tr>
         <tr>

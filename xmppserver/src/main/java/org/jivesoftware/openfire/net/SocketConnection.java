@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,8 +46,8 @@ import java.net.UnknownHostException;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.Certificate;
+import java.time.Duration;
 import java.util.Collection;
-import java.util.Date;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,23 +68,11 @@ public class SocketConnection extends AbstractConnection {
 
     private static final Map<SocketConnection, String> instances = new ConcurrentHashMap<>();
 
-    /**
-     * Milliseconds a connection has to be idle to be closed. Timeout is disabled by default. It's
-     * up to the connection's owner to configure the timeout value. Sending stanzas to the client
-     * is not considered as activity. We are only considering the connection active when the
-     * client sends some data or heartbeats (i.e. whitespaces) to the server.
-     * The reason for this is that sending data will fail if the connection is closed. And if
-     * the thread is blocked while sending data (because the socket is closed) then the clean up
-     * thread will close the socket anyway.
-     */
-    private long idleTimeout = -1;
-
     private final Socket socket;
-    private SocketReader socketReader;
 
     private Writer writer;
     private final AtomicBoolean writing = new AtomicBoolean(false);
-    private final AtomicReference<State> state = new AtomicReference<State>(State.OPEN);
+    private final AtomicReference<State> state = new AtomicReference<>(State.OPEN);
 
     /**
      * Deliverer to use when the connection is closed or was closed when delivering
@@ -97,7 +85,8 @@ public class SocketConnection extends AbstractConnection {
     private org.jivesoftware.util.XMLWriter xmlSerializer;
     private TLSStreamHandler tlsStreamHandler;
 
-    private long writeStarted = -1;
+    private volatile boolean writeInProgress = false;
+    private volatile long writeStartedNanos;
 
     private boolean usingSelfSignedCertificate;
 
@@ -263,12 +252,24 @@ public class SocketConnection extends AbstractConnection {
     }
 
     /**
-     * Returns the port that the connection uses.
+     * Returns the remote port used by the connection.
      *
-     * @return the port that the connection uses.
+     * @return the remote port, or 0 when unavailable.
+     * @deprecated This method is replaced by {@link #getRemotePort()}
      */
+    @Deprecated(forRemoval = true, since = "5.1.0") // Remove in or after Openfire 5.2.0.
     public int getPort() {
+        return getRemotePort();
+    }
+
+    @Override
+    public int getRemotePort() {
         return socket.getPort();
+    }
+
+    @Override
+    public int getLocalPort() {
+        return socket.getLocalPort();
     }
 
     /**
@@ -321,22 +322,6 @@ public class SocketConnection extends AbstractConnection {
             .map(SSLSession::getCipherSuite);
     }
 
-    public long getIdleTimeout() {
-        return idleTimeout;
-    }
-
-    /**
-     * Sets the number of milliseconds a connection has to be idle to be closed. Sending
-     * stanzas to the client is not considered as activity. We are only considering the
-     * connection active when the client sends some data or hearbeats (i.e. whitespaces)
-     * to the server.
-     *
-     * @param timeout the number of milliseconds a connection has to be idle to be closed.
-     */
-    public void setIdleTimeout(long timeout) {
-        this.idleTimeout = timeout;
-    }
-
     @Override
     public Certificate[] getLocalCertificates() {
         if (tlsStreamHandler != null) {
@@ -374,8 +359,8 @@ public class SocketConnection extends AbstractConnection {
         return backupDeliverer;
     }
 
-    public void close(@Nullable final StreamError error, final boolean networkInterruption) {
-        close(error, networkInterruption, false);
+    public void close(@Nullable final StreamError error) {
+        close(error, false);
     }
 
     /**
@@ -383,14 +368,10 @@ public class SocketConnection extends AbstractConnection {
      * forces the connection closed immediately. This method will be called when  we need to close the socket, discard
      * the connection and its session.
      */
-    private void close(@Nullable final StreamError error, final boolean networkInterruption, final boolean force) {
+    private void close(@Nullable final StreamError error, final boolean force) {
         if (state.compareAndSet(State.OPEN, State.CLOSED)) {
             
             if (session != null) {
-                if (!force && !networkInterruption) {
-                    // A 'clean' closure should never be resumed (see #onRemoteDisconnect for handling of unclean disconnects). OF-2752
-                    session.getStreamManager().formalClose();
-                }
                 session.setStatus(Session.Status.CLOSED);
             }
 
@@ -423,8 +404,14 @@ public class SocketConnection extends AbstractConnection {
             }
                 
             closeConnection();
-            notifyCloseListeners();
-            closeListeners.clear();
+
+            notifyCloseListeners().whenComplete((v,t) -> {
+                closeListeners.clear();
+                if (t != null) {
+                    Log.warn("Exception while invoking close listeners for {}", this, t);
+                }
+                completeCloseFuture();
+            });
         }
     }
 
@@ -434,11 +421,12 @@ public class SocketConnection extends AbstractConnection {
     }
 
     void writeStarted() {
-        writeStarted = System.currentTimeMillis();
+        writeStartedNanos = System.nanoTime();
+        writeInProgress = true;
     }
 
     void writeFinished() {
-        writeStarted = -1;
+        writeInProgress = false;
     }
 
     /**
@@ -451,28 +439,14 @@ public class SocketConnection extends AbstractConnection {
      */
     boolean checkHealth() {
         // Check that the sending operation is still active
-        long writeTimestamp = writeStarted;
-        if (writeTimestamp > -1 && System.currentTimeMillis() - writeTimestamp >
-                JiveGlobals.getIntProperty("xmpp.session.sending-limit", 60000)) {
-            // Close the socket
-            if (Log.isDebugEnabled()) {
-                Log.debug("Closing connection: " + this + " that started sending data at: " +
-                        new Date(writeTimestamp));
-            }
-            close(new StreamError(StreamError.Condition.connection_timeout, "Unable to validate the connection. Connection has been idle long enough for it to be considered 'unhealthy'."), true);
-            return true;
-        }
-        else {
-            // Check if the connection has been idle. A connection is considered idle if the client
-            // has not been receiving data for a period. Sending data to the client is not
-            // considered as activity.
-            if (idleTimeout > -1 && socketReader != null &&
-                    System.currentTimeMillis() - socketReader.getLastActive() > idleTimeout) {
+        if (writeInProgress) {
+            final Duration sending = Duration.ofNanos(System.nanoTime() - writeStartedNanos);
+            if (sending.toMillis() > JiveGlobals.getIntProperty("xmpp.session.sending-limit", 60000)) {
                 // Close the socket
                 if (Log.isDebugEnabled()) {
-                    Log.debug("Closing connection that has been idle: " + this);
+                    Log.debug("Closing connection: " + this + " that has been sending data for: " + sending);
                 }
-                close(new StreamError(StreamError.Condition.connection_timeout, "Not received data recently. Connection has been idle long enough for it to be considered 'unhealthy'."), true);
+                close(new StreamError(StreamError.Condition.connection_timeout, "Unable to validate the connection. Connection has been idle long enough for it to be considered 'unhealthy'."), true);
                 return true;
             }
         }
@@ -480,7 +454,7 @@ public class SocketConnection extends AbstractConnection {
     }
 
     private void release() {
-        writeStarted = -1;
+        writeInProgress = false;
         instances.remove(this);
     }
 
@@ -604,7 +578,4 @@ public class SocketConnection extends AbstractConnection {
         return this.getClass().getSimpleName() + "{socket: " + socket + ", state: " + state + ", session: " + session + "}";
     }
 
-    public void setSocketReader(SocketReader socketReader) {
-        this.socketReader = socketReader;
-    }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import org.apache.logging.log4j.spi.LoggerContext;
 import org.dom4j.Attribute;
 import org.dom4j.Document;
 import org.dom4j.Element;
+import org.dom4j.Node;
 import org.jivesoftware.admin.AdminConsole;
 import org.jivesoftware.database.DbConnectionManager;
 import org.jivesoftware.openfire.XMPPServer;
@@ -28,13 +29,15 @@ import org.jivesoftware.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.annotation.concurrent.GuardedBy;
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.jar.JarFile;
@@ -65,6 +68,28 @@ import java.util.zip.ZipException;
 public class PluginManager
 {
     private static final Logger Log = LoggerFactory.getLogger( PluginManager.class );
+
+    /**
+     * A delay that is observed between the time a plugin's unloading starts, and the plugin directory actually being removed.
+     */
+    public static final SystemProperty<Duration> PLUGIN_DIRECTORY_DESTROY_DELAY = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("plugins.unloading.directory.destroy.delay")
+        .setChronoUnit(ChronoUnit.MILLIS)
+        .setDefaultValue(Duration.ofSeconds(2))
+        .setDynamic(true)
+        .setMinValue(Duration.ZERO)
+        .build();
+
+    /**
+     * The maximum time that Openfire will wait for a plugin directory to be destroyed after the plugin is unloaded.
+     */
+    public static final SystemProperty<Duration> PLUGIN_DIRECTORY_DESTROY_TIMEOUT = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("plugins.unloading.directory.destroy.timeout")
+        .setChronoUnit(ChronoUnit.MILLIS)
+        .setDefaultValue(Duration.ofSeconds(40))
+        .setDynamic(true)
+        .setMinValue(Duration.ZERO)
+        .build();
 
     private final Path pluginDirectory;
 
@@ -256,14 +281,10 @@ public class PluginManager
      */
     public boolean isInstalled( final String canonicalName )
     {
-        final DirectoryStream.Filter<Path> filter = new DirectoryStream.Filter<Path>()
-        {
-            @Override
-            public boolean accept( Path entry ) {
-                final String name = entry.getFileName().toString();
-                return Files.exists( entry ) && !Files.isDirectory( entry ) &&
-                        ( name.equalsIgnoreCase( canonicalName + ".jar" ) || name.equalsIgnoreCase( canonicalName + ".war" ) );
-            }
+        final DirectoryStream.Filter<Path> filter = entry -> {
+            final String name = entry.getFileName().toString();
+            return Files.exists(entry) && !Files.isDirectory(entry) &&
+                (name.equalsIgnoreCase(canonicalName + ".jar") || name.equalsIgnoreCase(canonicalName + ".war"));
         };
 
         try ( final DirectoryStream<Path> paths = Files.newDirectoryStream( pluginDirectory, filter ) )
@@ -384,15 +405,15 @@ public class PluginManager
      * Returns a loaded plugin by its canonical name or {@code null} if a plugin with that name does not exist. The
      * canonical name is the lowercase-name of the plugin archive, without the file extension. For example: "broadcast".
      *
-     * @deprecated in Openfire 4.4 in favour of {@link #getPluginByName(String)}
+     * Note that the canonical name of the plugin is sensitive to filenames outside of the plugin's author direct
+     * control. Prefer using {@link #getPluginByName(String)}.
+     *
      * @param canonicalName the name of the plugin.
      * @return the plugin.
      */
-    // TODO: (2019-03-26) Remove with Openfire 5.0
-    @Deprecated(since = "4.4", forRemoval = true)
-    public synchronized Plugin getPlugin( String canonicalName )
+    public synchronized Optional<Plugin> getPluginByCanonicalName( String canonicalName )
     {
-        return pluginsLoaded.get( canonicalName.toLowerCase() );
+        return Optional.ofNullable(pluginsLoaded.get( canonicalName.toLowerCase() ));
     }
 
     /**
@@ -450,9 +471,6 @@ public class PluginManager
      */
     synchronized boolean loadPlugin( String canonicalName, Path pluginDir )
     {
-        // Clean up any warnings that were recorded during a previous attempt to load the plugin.
-        lastLoadWarnings.remove(canonicalName);
-
         final PluginMetadata metadata = PluginMetadata.getInstance( pluginDir );
         pluginMetadata.put( canonicalName, metadata );
 
@@ -468,6 +486,9 @@ public class PluginManager
             Log.debug("The unloaded file for plugin '{}' is silently ignored, as it has failed to load repeatedly.", canonicalName);
             return false;
         }
+
+        // Clean up any warnings that were recorded during a previous attempt to load the plugin.
+        lastLoadWarnings.remove(canonicalName);
 
         Log.debug( "Loading plugin '{}'...", canonicalName );
         try
@@ -522,7 +543,7 @@ public class PluginManager
                 }
             }
 
-            // Initialize the plugin class loader, which is either a new instance, or a the loader from a parent plugin.
+            // Initialize the plugin class loader, which is either a new instance, or the loader from a parent plugin.
             final PluginClassLoader pluginLoader;
 
             // Check to see if this is a child plugin of another plugin. If it is, we re-use the parent plugin's class
@@ -564,7 +585,7 @@ public class PluginManager
                 pluginLoader = new PluginClassLoader();
             }
 
-            // Add the plugin sources to the classloaded.
+            // Add the plugin sources to the class loader.
             pluginLoader.addDirectory( pluginDir.toFile() );
 
             // Initialise a logging context, if necessary
@@ -641,7 +662,7 @@ public class PluginManager
             Log.debug( "Initialized plugin '{}'.", canonicalName );
             Thread.currentThread().setContextClassLoader( oldLoader );
 
-            // If there a <adminconsole> section defined, register it.
+            // If there is an <adminconsole> section defined, register it.
             final Element adminElement = (Element) pluginXML.selectSingleNode( "/plugin/adminconsole" );
             if ( adminElement != null )
             {
@@ -667,20 +688,20 @@ public class PluginManager
                 }
 
                 // Modify all the URL's in the XML so that they are passed through the plugin servlet correctly.
-                final List urls = adminElement.selectNodes( "//@url" );
-                for ( final Object url : urls )
+                final List<Node> urls = adminElement.selectNodes( "//@url" );
+                for ( final Node url : urls )
                 {
                     final Attribute attr = (Attribute) url;
                     attr.setValue( "plugins/" + canonicalName + "/" + attr.getValue() );
                 }
 
                 // In order to internationalize the names and descriptions in the model, we add a "plugin" attribute to
-                // each tab, sidebar, and item so that the the renderer knows where to load the i18n Strings from.
+                // each tab, sidebar, and item so that the renderer knows where to load the i18n Strings from.
                 final String[] elementNames = new String[]{ "tab", "sidebar", "item" };
                 for ( final String elementName : elementNames )
                 {
-                    final List values = adminElement.selectNodes( "//" + elementName );
-                    for ( final Object value : values )
+                    final List<Node> values = adminElement.selectNodes( "//" + elementName );
+                    for ( final Node value : values )
                     {
                         final Element element = (Element) value;
                         // Make sure there's a name or description. Otherwise, no need to i18n settings.
@@ -745,19 +766,14 @@ public class PluginManager
     {
         Log.debug( "Deleting plugin '{}'...", pluginName );
 
-        try ( final DirectoryStream<Path> ds = Files.newDirectoryStream( getPluginsDirectory(), new DirectoryStream.Filter<Path>()
-        {
-            @Override
-            public boolean accept( final Path path ) {
-                if ( Files.isDirectory( path ) )
-                {
-                    return false;
-                }
-
-                final String fileName = path.getFileName().toString().toLowerCase();
-                return ( fileName.equals( pluginName + ".jar" ) || fileName.equals( pluginName + ".war" ) );
+        try ( final DirectoryStream<Path> ds = Files.newDirectoryStream( getPluginsDirectory(), path -> {
+            if (Files.isDirectory(path)) {
+                return false;
             }
-        } ) )
+
+            final String fileName = path.getFileName().toString().toLowerCase();
+            return (fileName.equals(pluginName + ".jar") || fileName.equals(pluginName + ".war"));
+        }) )
         {
             for ( final Path pluginFile : ds )
             {
@@ -778,11 +794,31 @@ public class PluginManager
         }
     }
 
+    /**
+     * Starts the process of reloading a plugin. Does not wait for the process to conclude.
+     *
+     * @param pluginName The name of the plugin to be reloaded.
+     * @return if the process could be started.
+     */
     public boolean reloadPlugin( String pluginName )
+    {
+        return reloadPlugin(pluginName, false);
+    }
+
+    /**
+     * Starts the process of reloading a plugin. Does not wait for the process to conclude.
+     *
+     * Note that the return value does not indicate that the reload was successful. It only indicates if an attempt was
+     * made.
+     *
+     * @param pluginName The name of the plugin to be reloaded.
+     * @return if the process could be started.
+     */
+    public boolean reloadPlugin(String pluginName, boolean blockUntilDone)
     {
         Log.debug( "Reloading plugin '{}'...", pluginName );
 
-        final Plugin plugin = getPlugin( pluginName );
+        final Plugin plugin = pluginsLoaded.get( pluginName.toLowerCase() );
         if ( plugin == null )
         {
             Log.warn( "Unable to reload plugin '{}'. No such plugin loaded.", pluginName );
@@ -796,96 +832,146 @@ public class PluginManager
             throw new IllegalStateException( "Unable to determine installation path of plugin: " + pluginName );
         }
 
-        try
-        {
-            Files.setLastModifiedTime( path, FileTime.fromMillis( 0 ) );
-        }
-        catch ( IOException e )
-        {
-            Log.warn( "Unable to reload plugin '{}'. Unable to reset the 'last modified time' of the plugin path. Try removing and restoring the plugin jar file manually.", pluginName );
-            return false;
-        }
-
-        pluginMonitor.runNow( false );
+        pluginMonitor.flagForReload( PluginMetadataHelper.getCanonicalName(plugin) );
+        pluginMonitor.runNow( blockUntilDone );
         return true;
     }
 
     /**
-     * Unloads a plugin. The {@link Plugin#destroyPlugin()} method will be called and then any resources will be
-     * released. The name should be the canonical name of the plugin (based on the plugin directory name) and not the
-     * human readable name as given by the plugin meta-data.
+     * An operation that can be executed against a plugin.
      *
-     * This method only removes the plugin but does not delete the plugin JAR file. Therefore, if the plugin JAR still
-     * exists after this method is called, the plugin will be started again the next  time the plugin monitor process
-     * runs. This is useful for "restarting" plugins. To completely remove the plugin, use {@link #deletePlugin(String)}
-     * instead.
-     *
-     * This method is called automatically when a plugin's JAR file is deleted.
-     *
-     * @param canonicalName the canonical name of the plugin to unload.
+     * @param <String> The canonical name of the plugin against which the operation is to be applied.
+     * @param <Plugin> The plugin instance against which the operation is to be applied.
      */
-    synchronized void unloadPlugin( String canonicalName )
+    @FunctionalInterface
+    private interface PluginOperation<String, Plugin>
     {
-        Log.debug( "Unloading plugin '{}'...", canonicalName );
+        void perform(String canonicalName, Plugin plugin);
+    }
 
-        failureToLoadCount.remove( canonicalName );
-        lastLoadWarnings.remove(canonicalName);
+    /**
+     * Execute an operation on all plugins that exist in the hierarchy of the provided plugin.
+     *
+     * Note that the operation is executed against all plugins in the hierarchy, including any descendant, ancestor or
+     * sibling, as well as their descendants, ancestors and siblings. The operation as also executed against the
+     * provided plugin itself.
+     *
+     * This is a recursive method that guards against circular hierarchies (by delegating to the overloaded
+     * {@link #doInPluginHierarchy(String, Plugin, Set, PluginOperation)} method).
+     *
+     * @param canonicalName The name of the plugin
+     * @param plugin a plugin instance, possibly part of a hierarchy of plugins
+     * @param pluginOperation An operation to be executed against every plugin that is in the same hierarchy as the provided plugin.
+     */
+    private void doInPluginHierarchy(@Nonnull final String canonicalName, @Nonnull final Plugin plugin, @Nonnull final PluginOperation<String, Plugin> pluginOperation)
+    {
+        doInPluginHierarchy(canonicalName, plugin, new HashSet<>(), pluginOperation);
+    }
 
-        Plugin plugin = pluginsLoaded.get( canonicalName );
-        if ( plugin != null )
-        {
-            // See if any child plugins are defined.
-            if ( parentPluginMap.containsKey( plugin ) )
-            {
-                String[] childPlugins = parentPluginMap.get( plugin ).toArray(new String[0]);
-                for ( String childPlugin : childPlugins )
-                {
-                    Log.debug( "Unloading child plugin: '{}'.", childPlugin );
-                    childPluginMap.remove( pluginsLoaded.get( childPlugin ) );
-                    unloadPlugin( childPlugin );
-                }
-                parentPluginMap.remove( plugin );
-            }
+    /**
+     * Execute an operation on all plugins that exist in the hierarchy of the provided plugin.
+     *
+     * Note that the operation is executed against all plugins in the hierarchy, including any descendant, ancestor or
+     * sibling, as well as their descendants, ancestors and siblings. The operation as also executed against the
+     * provided plugin itself.
+     *
+     * This is a recursive method that guards against circular hierarchies (using the `seen` argument)
+     *
+     * @param canonicalName The name of the plugin
+     * @param plugin a plugin instance, possibly part of a hierarchy of plugins
+     * @param seen canonical names of plugins against which the operation has already been executed.
+     * @param pluginOperation An operation to be executed against every plugin that is in the same hierarchy as the provided plugin.
+     */
+    private void doInPluginHierarchy(@Nonnull final String canonicalName, @Nonnull final Plugin plugin, @Nonnull final Set<String> seen, @Nonnull final PluginOperation<String, Plugin> pluginOperation)
+    {
+        // Guard against circular recursion
+        if (!seen.add(canonicalName)) {
+            return;
+        }
 
-            Path webXML = pluginDirectory.resolve( canonicalName ).resolve( "web" ).resolve( "WEB-INF" ).resolve( "web.xml" );
-            if ( Files.exists( webXML ) )
-            {
-                AdminConsole.removeModel( canonicalName );
-                PluginServlet.unregisterServlets( webXML.toFile() );
+        // Recursively perform this in all children of the provided Plugin instance.
+        final List<String> childPluginNames = parentPluginMap.getOrDefault(plugin, Collections.emptyList());
+        for (final String childPluginName : childPluginNames) {
+            final Plugin childPlugin = pluginsLoaded.get(childPluginName);
+            if (childPlugin != null) {
+                doInPluginHierarchy(childPluginName, childPlugin, seen, pluginOperation);
             }
-            Path customWebXML = pluginDirectory.resolve( canonicalName ).resolve( "web" ).resolve( "WEB-INF" ).resolve( "web-custom.xml" );
-            if ( Files.exists( customWebXML ) )
-            {
-                PluginServlet.unregisterServlets( customWebXML.toFile() );
-            }
+        }
 
-            // Wrap destroying the plugin in a try/catch block. Otherwise, an exception raised
-            // in the destroy plugin process will disrupt the whole unloading process. It's still
-            // possible that classloader destruction won't work in the case that destroying the plugin
-            // fails. In that case, Openfire may need to be restarted to fully cleanup the plugin
-            // resources.
-            try
-            {
-                plugin.destroyPlugin();
-                Log.debug( "Destroyed plugin '{}'.", canonicalName );
+        // Recursively perform this in the parent of the provided Plugin instance.
+        final String parentPluginName = childPluginMap.get(plugin);
+        if (parentPluginName != null) {
+            final Plugin parentPlugin = pluginsLoaded.get(parentPluginName);
+            if (parentPlugin != null) {
+                doInPluginHierarchy(parentPluginName, parentPlugin, seen, pluginOperation);
             }
-            catch ( Exception e )
-            {
-                Log.error( "An exception occurred while unloading plugin '{}':", canonicalName, e );
-            }
+        }
+
+        // Perform this in the provided Plugin instance itself.
+        pluginOperation.perform(canonicalName, plugin);
+    }
+
+    /**
+     * Destroys a plugin, by:
+     *
+     * <ol>
+     * <li>unregistering its web components</li>
+     * <li>invoking its {@link Plugin#destroyPlugin()} method</li>
+     * <li>removing its System Properties</li>
+     * <li>removing its metadata from PluginManager</li>
+     * </ol>
+     *
+     * @param canonicalName The name of the plugin to be destroyed.
+     * @param plugin the instance to be destroyed.
+     */
+    private void doDestroyPlugin(@Nonnull final String canonicalName, @Nonnull final Plugin plugin)
+    {
+        Path webXML = pluginDirectory.resolve(canonicalName).resolve("web").resolve("WEB-INF").resolve("web.xml");
+        if (Files.exists(webXML)) {
+            AdminConsole.removeModel(canonicalName);
+            PluginServlet.unregisterServlets(webXML.toFile());
+        }
+        Path customWebXML = pluginDirectory.resolve(canonicalName).resolve("web").resolve("WEB-INF").resolve("web-custom.xml");
+        if (Files.exists(customWebXML)) {
+            PluginServlet.unregisterServlets(customWebXML.toFile());
+        }
+
+        // Wrap destroying the plugin in a try/catch block. Otherwise, an exception raised
+        // in the destroy plugin process will disrupt the whole unloading process. It's still
+        // possible that classloader destruction won't work in the case that destroying the plugin
+        // fails. In that case, Openfire may need to be restarted to fully cleanup the plugin
+        // resources.
+        try {
+            plugin.destroyPlugin();
+            Log.debug("Destroyed plugin '{}'.", canonicalName);
+        } catch (Exception e) {
+            Log.error("An exception occurred while unloading plugin '{}':", canonicalName, e);
         }
 
         // Remove references to the plugin so it can be unloaded from memory
         // If plugin still fails to be removed then we will add references back
         // Anyway, for a few seconds admins may not see the plugin in the admin console
         // and in a subsequent refresh it will appear if failed to be removed
-        pluginsLoaded.remove( canonicalName );
-        final String pluginName = getMetadata(canonicalName).getName();
-        Log.info("Removing all System Properties for the plugin '{}'", pluginName);
-        SystemProperty.removePropertiesForPlugin(pluginName);
-        Path pluginFile = pluginDirs.remove( canonicalName );
+        PluginMetadata metadata = getMetadata(canonicalName);
+        if (metadata != null) {
+            final String pluginName = getMetadata(canonicalName).getName();
+            Log.info("Removing all System Properties for the plugin '{}'", pluginName);
+            SystemProperty.removePropertiesForPlugin(pluginName);
+        }
+        pluginMetadata.remove(canonicalName);
+    }
+
+    /**
+     * Destroys a PluginClassLoader associated to a plugin.
+     *
+     * WHen no class loader is associated to the plugin, this method is a no-op.
+     *
+     * @param canonicalName The name of the plugin for which to destroy the class loader.
+     * @param plugin the instance of the plugin for which to destroy the class loader.
+     */
+    private void doDestroyClassLoader(final String canonicalName, final Plugin plugin)
+    {
         PluginClassLoader pluginLoader = classloaders.remove( plugin );
-        PluginMetadata metadata = pluginMetadata.remove( canonicalName );
 
         // try to close the cached jar files from the plugin class loader
         if ( pluginLoader != null )
@@ -902,71 +988,169 @@ public class PluginManager
         {
             Log.warn( "No plugin loader found for '{}'.", canonicalName );
         }
+    }
 
+    /**
+     * Deletes the directory in which the plugin's jar file is extracted.
+     *
+     * On Unix-like systems this typically succeeds immediately. On Windows, the JVM holds mandatory file locks on
+     * JAR/class files that were opened via the plugin's class loader; those locks are only released once the underlying
+     * {@code ZipFile}/{@code JarFile} handles are garbage-collected. The method therefore retries several times,
+     * requesting GC and finalization between attempts. If the directory still cannot be deleted after all retries,
+     * every remaining file and the directory itself are registered with {@link java.io.File#deleteOnExit()} so they are
+     * removed when the JVM exits.
+     *
+     * @param canonicalName The name of the plugin for which to delete the plugin directory.
+     * @param plugin the instance of the plugin for which to delete the plugin directory.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-3208">OF-3208</a>
+     */
+    private void doDestroyExtractedFiles(final String canonicalName, final Plugin plugin)
+    {
         // Try to remove the folder where the plugin was exploded. If this works then
         // the plugin was successfully removed. Otherwise, some objects created by the
         // plugin are still in memory.
         Path dir = pluginDirectory.resolve( canonicalName );
-        // Give the plugin 2 seconds to unload.
         try
         {
-            Thread.sleep( 2000 );
-            // Ask the system to clean up references.
+            // Ask the system to clean up references (OF-3208)
             System.gc();
-            int count = 0;
-            while ( !deleteDir( dir ) && count++ < 5 )
+            System.runFinalization();
+
+            // Give the plugin some time to unload.
+            if (!PLUGIN_DIRECTORY_DESTROY_DELAY.getValue().isNegative() && PLUGIN_DIRECTORY_DESTROY_DELAY.getValue().isZero())
             {
-                Log.warn( "Error unloading plugin '{}'. Will attempt again momentarily.", canonicalName );
-                Thread.sleep( 8000 );
-                // Ask the system to clean up references.
+                Thread.sleep(PLUGIN_DIRECTORY_DESTROY_DELAY.getValue().toMillis());
+
+                // Ask the system to clean up references (OF-3208)
                 System.gc();
+                System.runFinalization();
             }
+
+            final int maxIterations = 20;
+            if (!PLUGIN_DIRECTORY_DESTROY_TIMEOUT.getValue().isNegative() && !PLUGIN_DIRECTORY_DESTROY_TIMEOUT.getValue().isZero())
+            {
+                final Duration iterationDuration = PLUGIN_DIRECTORY_DESTROY_TIMEOUT.getValue().dividedBy(maxIterations);
+
+                int count = 0;
+                while ( !deleteDir( dir ) && count++ < maxIterations )
+                {
+                    Log.debug( "Unable to remove files for the unloaded plugin '{}'. Will attempt again for attempt {} of {} in {}.", canonicalName, count, maxIterations, iterationDuration );
+                    Thread.sleep( iterationDuration.toMillis() );
+
+                    // Ask the system to clean up references.
+                    System.gc();
+                    System.runFinalization();
+                }
+            }
+
+            // If the directory still exists after all retries (common on Windows, where the JVM holds mandatory file
+            // locks on JAR/class files until they are garbage-collected), register every remaining file and directory
+            // for deletion when the JVM exits. postVisitDirectory registers each directory *after* its contents, which
+            // matches the JVM's LIFO deleteOnExit processing order and ensures no directory is deleted while it still
+            // has children.
+            if ( Files.exists( dir ) ) {
+                Log.warn( "Unable to fully delete plugin directory for '{}' after {} retries. Registering remaining files for deletion on JVM exit: {}", canonicalName, maxIterations, dir );
+                try {
+                    Files.walkFileTree( dir, new SimpleFileVisitor<>() {
+                        @Nonnull
+                        @Override
+                        public FileVisitResult visitFile(@Nonnull Path file, @Nonnull BasicFileAttributes attrs) {
+                            file.toFile().deleteOnExit();
+                            return FileVisitResult.CONTINUE;
+                        }
+
+                        @Nonnull
+                        @Override
+                        public FileVisitResult visitFileFailed(@Nonnull Path file, @Nonnull IOException exc) {
+                            Log.warn("Unable to register file for deletion on exit for plugin '{}': {}", canonicalName, file, exc);
+                            file.toFile().deleteOnExit();
+                            final Path parent = file.getParent();
+                            if (parent != null) {
+                                parent.toFile().deleteOnExit();
+                            }
+                            return FileVisitResult.CONTINUE;
+                        }
+
+                        @Nonnull
+                        @Override
+                        public FileVisitResult postVisitDirectory(@Nonnull Path subDir, IOException exc) {
+                            subDir.toFile().deleteOnExit();
+                            return FileVisitResult.CONTINUE;
+                        }
+                    } );
+                }
+                catch (IOException e) {
+                    Log.warn( "Unable to register plugin '{}' directory for deletion on exit: {}", canonicalName, dir, e );
+                    dir.toFile().deleteOnExit(); // Even when traversal fails, at least attempt to delete the plugin directory itself on JVM exit.
+                }
+            }
+
+            pluginDirs.remove(canonicalName);
         }
         catch ( InterruptedException e )
         {
             Log.debug( "Stopped waiting for plugin '{}' to be fully unloaded.", canonicalName, e );
         }
+    }
 
-        if ( plugin != null && Files.notExists( dir ) )
-        {
-            // Unregister plugin caches
-            PluginCacheRegistry.getInstance().unregisterCaches( canonicalName );
+    /**
+     * Unregisters the caches that were registered for a plugin.
+     *
+     * @param canonicalName The name of the plugin for which to unregister caches.
+     * @param plugin the instance of the plugin for which to unregister caches.
+     */
+    private void doDestroyCaches(final String canonicalName, final Plugin plugin)
+    {
+        // Unregister plugin caches
+        PluginCacheRegistry.getInstance().unregisterCaches( canonicalName );
+    }
 
-            // See if this is a child plugin. If it is, we should unload
-            // the parent plugin as well.
-            if ( childPluginMap.containsKey( plugin ) )
-            {
-                String parentPluginName = childPluginMap.get( plugin );
-                Plugin parentPlugin = pluginsLoaded.get( parentPluginName );
-                List<String> childrenPlugins = parentPluginMap.get( parentPlugin );
+    /**
+     * Unloads a plugin. The {@link Plugin#destroyPlugin()} method will be called and then any resources will be
+     * released. The name should be the canonical name of the plugin (based on the plugin directory name) and not the
+     * human-readable name as given by the plugin meta-data.
+     *
+     * This method only removes the plugin but does not delete the plugin JAR file. Therefore, if the plugin JAR still
+     * exists after this method is called, the plugin will be started again the next time the plugin monitor process
+     * runs. This is useful for "restarting" plugins. To completely remove the plugin, use {@link #deletePlugin(String)}
+     * instead.`
+     *
+     * This method is called automatically when a plugin's JAR file is deleted.
+     *
+     * When the plugin that is unloaded is part of a hierarchy of parent/child plugins, all plugins in the hierarchy are
+     * unloaded.
+     *
+     * @param canonicalName the canonical name of the plugin to unload.
+     */
+    synchronized void unloadPlugin( String canonicalName )
+    {
+        Log.debug( "Unloading plugin '{}'...", canonicalName );
 
-                childrenPlugins.remove( canonicalName );
-                childPluginMap.remove( plugin );
+        failureToLoadCount.remove(canonicalName);
+        lastLoadWarnings.remove(canonicalName);
 
-                // When the parent plugin implements PluginListener, its pluginDestroyed() method
-                // isn't called if it dies first before its child. Athough the parent will die anyway,
-                // it's proper if the parent "gets informed first" about the dying child when the
-                // child is the one being killed first.
-                if ( parentPlugin instanceof PluginListener )
-                {
-                    PluginListener listener;
-                    listener = (PluginListener) parentPlugin;
-                    listener.pluginDestroyed( canonicalName, plugin );
-                }
-                unloadPlugin( parentPluginName );
-            }
-            firePluginDestroyedEvent( canonicalName, plugin );
-            Log.info( "Successfully unloaded plugin '{}'.", canonicalName );
+        Plugin plugin = pluginsLoaded.get( canonicalName );
+        if (plugin == null) {
+            return;
         }
-        else if ( plugin != null )
-        {
-            //FIXME this make no sense, while state of plugin is undetermined, (Destroy is partly executed, files are/are not removed)
-            Log.info( "Restore references since we failed to remove the plugin '{}'.", canonicalName );
-            pluginsLoaded.put( canonicalName, plugin );
-            pluginDirs.put( canonicalName, pluginFile );
-            classloaders.put( plugin, pluginLoader );
-            pluginMetadata.put( canonicalName, metadata );
-        }
+
+        doInPluginHierarchy(canonicalName, plugin, this::doDestroyPlugin);
+        doInPluginHierarchy(canonicalName, plugin, this::doDestroyClassLoader);
+
+        // Remove from the loaded-plugin registry immediately after the classloader is torn down, so that isLoaded()
+        // reflects the logical state even if physical file deletion is slow (e.g. on Windows where the JVM holds file
+        // locks until GC). See OF-3208
+        doInPluginHierarchy(canonicalName, plugin, (String name, Plugin plug) -> {
+            pluginsLoaded.remove(name);
+            childPluginMap.remove(plug);
+            parentPluginMap.remove(plug);
+        });
+
+        doInPluginHierarchy(canonicalName, plugin, this::doDestroyExtractedFiles);
+        doInPluginHierarchy(canonicalName, plugin, this::doDestroyCaches); // TODO document if/why this is done here (and not as part of doDestroyPlugin, for example).
+        doInPluginHierarchy(canonicalName, plugin, this::firePluginDestroyedEvent);
+
+        Log.info( "Successfully unloaded plugin '{}'.", canonicalName );
     }
 
     /**
@@ -982,6 +1166,15 @@ public class PluginManager
     }
 
     /**
+     * Checks if there were any problems while loading plugins.
+     *
+     * @return true when at least one plugin has failed to load, otherwise false.
+     */
+    public boolean hasLoadWarnings() {
+        return !lastLoadWarnings.isEmpty();
+    }
+
+    /**
      * Loads a class from the classloader of a plugin.
      *
      * @param plugin the plugin.
@@ -989,7 +1182,7 @@ public class PluginManager
      * @return the class.
      * @throws ClassNotFoundException if the class was not found.
      */
-    public Class loadClass( Plugin plugin, String className ) throws ClassNotFoundException {
+    public Class<?> loadClass( Plugin plugin, String className ) throws ClassNotFoundException {
         final PluginClassLoader loader;
         synchronized ( this ) {
             loader = classloaders.get( plugin );
@@ -1063,33 +1256,29 @@ public class PluginManager
         {
             if ( Files.isDirectory( dir ) )
             {
-                Files.walkFileTree( dir, new SimpleFileVisitor<Path>()
+                Files.walkFileTree( dir, new SimpleFileVisitor<>()
                 {
+                    @Nonnull
                     @Override
-                    public FileVisitResult visitFile( Path file, BasicFileAttributes attrs ) throws IOException
+                    public FileVisitResult visitFile(@Nonnull Path file, @Nonnull BasicFileAttributes attrs) throws IOException
                     {
-                        try
-                        {
-                            Files.deleteIfExists( file );
-                        }
-                        catch ( IOException e )
-                        {
-                            Log.debug( "Plugin removal: could not delete: {}", file );
+                        try {
+                            Files.deleteIfExists(file);
+                        } catch (IOException e) {
+                            Log.debug("Plugin removal: could not delete: {}", file);
                             throw e;
                         }
                         return FileVisitResult.CONTINUE;
                     }
 
+                    @Nonnull
                     @Override
-                    public FileVisitResult postVisitDirectory( Path dir, IOException exc ) throws IOException
+                    public FileVisitResult postVisitDirectory(@Nonnull Path dir, IOException exc) throws IOException
                     {
-                        try
-                        {
-                            Files.deleteIfExists( dir );
-                        }
-                        catch ( IOException e )
-                        {
-                            Log.debug( "Plugin removal: could not delete: {}", dir );
+                        try {
+                            Files.deleteIfExists(dir);
+                        } catch (IOException e) {
+                            Log.debug("Plugin removal: could not delete: {}", dir);
                             throw e;
                         }
                         return FileVisitResult.CONTINUE;

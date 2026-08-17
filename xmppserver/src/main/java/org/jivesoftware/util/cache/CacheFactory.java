@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -105,12 +105,10 @@ public class CacheFactory {
                 "org.jivesoftware.openfire.plugin.util.cache.ClusteredCacheFactory");
 
         cacheNames.put("DNS Records", "dnsRecords");
-        cacheNames.put("Favicon Hits", "faviconHits");
-        cacheNames.put("Favicon Misses", "faviconMisses");
+        cacheNames.put("Favicon", "favicon");
         cacheNames.put("Group", "group");
         cacheNames.put("Group Metadata Cache", "groupMeta");
         cacheNames.put("Group (Shared) Metadata Cache", "groupSharingMeta");
-        cacheNames.put("Javascript Cache", "javascript");
         cacheNames.put("Last Activity Cache", "lastActivity");
         cacheNames.put("Multicast Service", "multicast");
         cacheNames.put("Offline Message Size", "offlinemessage");
@@ -179,8 +177,6 @@ public class CacheFactory {
         cacheProps.put(PROPERTY_PREFIX_CACHE + "username2roster" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "username2rosterItems" + PROPERTY_SUFFIX_SIZE, 10_485_760L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "username2rosterItems" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(10).toMillis());
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "javascript" + PROPERTY_SUFFIX_SIZE, 1_048_576L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "javascript" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofDays(10).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "ldap" + PROPERTY_SUFFIX_SIZE, 5_242_880L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "ldap" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofHours(2).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "listsCache" + PROPERTY_SUFFIX_SIZE, 5_242_880L);
@@ -191,8 +187,7 @@ public class CacheFactory {
         cacheProps.put(PROPERTY_PREFIX_CACHE + "remoteUsersCache" + PROPERTY_SUFFIX_SIZE, 5_242_880L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "remoteUsersCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "vcardCache" + PROPERTY_SUFFIX_SIZE, 10_485_760L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "faviconHits" + PROPERTY_SUFFIX_SIZE, 1_048_576L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "faviconMisses" + PROPERTY_SUFFIX_SIZE, 1_048_576L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "favicon" + PROPERTY_SUFFIX_SIZE, 1_048_576L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "routeServer" + PROPERTY_SUFFIX_SIZE, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "routeServer" + PROPERTY_SUFFIX_MAX_LIFE_TIME, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "routeComponent" + PROPERTY_SUFFIX_SIZE, -1L);
@@ -244,7 +239,7 @@ public class CacheFactory {
         cacheProps.put(PROPERTY_PREFIX_CACHE + "mucHistory" + PROPERTY_SUFFIX_SIZE, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "mucHistory" + PROPERTY_SUFFIX_MAX_LIFE_TIME, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "mucPings" + PROPERTY_SUFFIX_SIZE, -1L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "mucPings" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "mucPings" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(135).toMillis()); // OF-3095
 
         // The JID-based classes (wrappers for Caffeine caches) take their default values from whatever is hardcoded in the JID implementation.
         cacheProps.put(PROPERTY_PREFIX_CACHE + "jidNodeprep" + PROPERTY_SUFFIX_SIZE, JID.NODEPREP_CACHE.policy().eviction().get().getMaximum() );
@@ -507,6 +502,12 @@ public class CacheFactory {
      * This is of particular interest when the cache is used to store data provided by Openfire plugins (as these
      * classes get loaded by a class loader that is replaced when a plugin gets reloaded or upgraded).
      *
+     * It is important for a Cache that uses class definitions loaded by a plugin to be 'dereferenced' when the plugin
+     * that provided the class definitions get unloaded (failing to do so will cause ClassCastExceptions, when a new
+     * version of the same plugin gets loaded). For this, {@link #dereferenceSerializingCache(String)} can be used.
+     * To (re)register class definitions with the cache, this #createSerializingCache method can be used. When the cache
+     * pre-exists, it will set (or overwrite) the registered class definitions.
+     *
      * As compared to other caches, usage of this cache will require more system resources, as the serialized
      * representation of an object typically is (much) larger than its original (unserialized) form.
      *
@@ -520,15 +521,44 @@ public class CacheFactory {
     public static synchronized <T extends Cache> T createSerializingCache(String name, Class keyClass, Class valueClass) {
         T cache = (T) caches.get(name);
         if (cache != null) {
+            if (cache instanceof CacheWrapper<?,?> && ((CacheWrapper) cache).getWrappedCache() instanceof SerializingCache<?,?>) {
+                log.debug("Reset the classes used to serialize data for serializing cache '{}': keyClass '{}', valueClass '{}' (it is likely that a new version of the plugin that uses this class was loaded).", name, keyClass, valueClass);
+                ((SerializingCache)((CacheWrapper) cache).getWrappedCache()).registerClasses(keyClass, valueClass);
+            }
             return cache;
         }
 
         final Cache<String, String> delegate = (Cache<String, String>) cacheFactoryStrategy.createCache(name);
-        final T sCache = (T) new SerializingCache(delegate, keyClass, valueClass);
+        final SerializingCache sCache = new SerializingCache(delegate);
+        sCache.registerClasses(keyClass, valueClass);
 
-        log.info("Created serializing cache [" + cacheFactoryStrategy.getClass().getName() + "] for " + name);
+        log.info("Created serializing cache [{}] for {}, keyClass '{}', valueClass '{}'", cacheFactoryStrategy.getClass().getName(), name, keyClass, valueClass);
 
-        return wrapCache(sCache, name);
+        return wrapCache((T) sCache, name);
+    }
+
+    /**
+     * Removes the class definitions from a SerializingCache, if a cache exists with the provided name (and that cache
+     * is a SerializingCache).
+     *
+     * This method should be invoked when a plugin that provided the class definitions gets unloaded. If this method is
+     * not invoked, the Plugin Class Loader will retain references (and thus not be garbage collected). This will cause
+     * ClassCastExceptions when a new/reloaded version of the plugin starts interacting with the cache.
+     *
+     * A cache for which this method is used does not get destroyed (all data is retained per the cache configuration).
+     * However, the cache cannot be interacted with (as data in the cache cannot be serialized/deserialized). To restore
+     * functionality, {@link #createSerializingCache(String, Class, Class)} is to be used. This will re-register class
+     * definitions for existing caches (or create a new cache, if one doesn't exist).
+     *
+     * @param name The name of the cache.
+     */
+    public static synchronized void dereferenceSerializingCache(String name) {
+        Cache cache = caches.get(name);
+        if (cache != null) {
+            if (cache instanceof CacheWrapper<?,?> && ((CacheWrapper) cache).getWrappedCache() instanceof SerializingCache<?,?>) {
+                ((SerializingCache)((CacheWrapper) cache).getWrappedCache()).deregisterClasses();
+            }
+        }
     }
 
     /**
@@ -566,31 +596,6 @@ public class CacheFactory {
             } else {
                 cacheFactoryStrategy.destroyCache(cache);
             }
-        }
-    }
-
-    /**
-     * @deprecated in favour of {@link Cache#getLock}. Will be removed in Openfire 5.0.0.
-     *
-     * <p>Returns an existing {@link java.util.concurrent.locks.Lock} on the specified key or creates a new one
-     * if none was found. This operation is thread safe. Successive calls with the same key may or may not
-     * return the same {@link java.util.concurrent.locks.Lock}. However, different threads asking for the
-     * same Lock at the same time will get the same Lock object.<p>
-     *
-     * The supplied cache may or may not be used depending whether the server is running on cluster mode
-     * or not. When not running as part of a cluster then the lock will be unrelated to the cache and will
-     * only be visible in this JVM.
-     *
-     * @param key the object that defines the visibility or scope of the lock.
-     * @param cache the cache used for holding the lock.
-     * @return an existing lock on the specified key or creates a new one if none was found.
-     */
-    @Deprecated(since = "4.5", forRemoval = true)
-    public static synchronized Lock getLock(Object key, Cache cache) {
-        if (localOnly.contains(cache.getName())) {
-            return localCacheFactoryStrategy.getLock(key, cache);
-        } else {
-            return cacheFactoryStrategy.getLock(key, cache);
         }
     }
 
@@ -824,17 +829,14 @@ public class CacheFactory {
 
     private static ClassLoader getClusteredCacheStrategyClassLoader() {
         PluginManager pluginManager = XMPPServer.getInstance().getPluginManager();
-        Plugin plugin = pluginManager.getPlugin("hazelcast");
-        if (plugin == null) {
-            plugin = pluginManager.getPlugin("clustering");
-            if (plugin == null) {
-                plugin = pluginManager.getPlugin("enterprise");
-            }
-        }
+        Plugin plugin = pluginManager.getPluginByCanonicalName("hazelcast")
+            .or(() -> pluginManager.getPluginByCanonicalName("clustering"))
+            .or(() -> pluginManager.getPluginByCanonicalName("enterprise"))
+            .orElse(null);
         PluginClassLoader pluginLoader = pluginManager.getPluginClassloader(plugin);
         if (pluginLoader != null) {
             if (log.isDebugEnabled()) {
-                StringBuffer pluginLoaderDetails = new StringBuffer("Clustering plugin class loader: ");
+                StringBuilder pluginLoaderDetails = new StringBuilder("Clustering plugin class loader: ");
                 pluginLoaderDetails.append(pluginLoader.getClass().getName());
                 for (URL url : pluginLoader.getURLs()) {
                     pluginLoaderDetails.append("\n\t").append(url.toExternalForm());
@@ -949,7 +951,8 @@ public class CacheFactory {
                 Cache clusteredCache = cacheFactoryStrategy.createCache(cacheWrapper.getName());
                 if (cacheWrapper.getWrappedCache() instanceof SerializingCache) {
                     final SerializingCache serializingCache = (SerializingCache) cacheWrapper.getWrappedCache();
-                    clusteredCache = new SerializingCache(clusteredCache, serializingCache.getKeyClass(), serializingCache.getValueClass());
+                    clusteredCache = new SerializingCache(clusteredCache);
+                    ((SerializingCache) clusteredCache).registerClasses(serializingCache.getKeyClass(), serializingCache.getValueClass());
                 }
                 cacheWrapper.setWrappedCache(clusteredCache);
             });
@@ -974,7 +977,8 @@ public class CacheFactory {
                 Cache standaloneCache = cacheFactoryStrategy.createCache(cacheWrapper.getName());
                 if (cacheWrapper.getWrappedCache() instanceof SerializingCache) {
                     final SerializingCache serializingCache = (SerializingCache) cacheWrapper.getWrappedCache();
-                    standaloneCache = new SerializingCache(standaloneCache, serializingCache.getKeyClass(), serializingCache.getValueClass());
+                    standaloneCache = new SerializingCache(standaloneCache);
+                    ((SerializingCache) standaloneCache).registerClasses(serializingCache.getKeyClass(), serializingCache.getValueClass());
                 }
                 cacheWrapper.setWrappedCache(standaloneCache);
             });

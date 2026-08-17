@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
     errorPage="error.jsp"
 %>
 <%@ page import="java.net.URLEncoder" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt"%>
@@ -79,7 +80,7 @@
                 errors.put("numMessages", "Please enter a valid number of messages.");
             }
         }
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             if (policy == ALL) {
                 // Update MUC history strategy
                 historyStrat.setType(HistoryStrategy.Type.all);
@@ -96,13 +97,13 @@
             // Log the event
             webManager.logEvent("set MUC history settings for service "+mucname, "type = "+policy+"\nmax messages = "+numMessages);
             // All done, redirect
-            response.sendRedirect("muc-history-settings.jsp?success=true&mucname="+URLEncoder.encode(mucname, "UTF-8"));
+            response.sendRedirect("muc-history-settings.jsp?success=true&mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8));
             return;
         }
     }
 
     // Set page vars
-    if (errors.size() == 0) {
+    if (errors.isEmpty()) {
         if (historyStrat.getType() == HistoryStrategy.Type.all) {
             policy = ALL;
         }
@@ -120,17 +121,17 @@
 <head>
 <title><fmt:message key="groupchat.history.settings.title"/></title>
 <meta name="subPageID" content="muc-history"/>
-<meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, "UTF-8") %>"/>
+<meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8) %>"/>
 <meta name="helpPage" content="edit_group_chat_history_settings.html"/>
 </head>
 <body>
 
 <p>
 <fmt:message key="groupchat.history.settings.introduction" />
-<fmt:message key="groupchat.service.settings_affect" /> <b><a href="muc-service-edit-form.jsp?mucname=<%= URLEncoder.encode(mucname, "UTF-8") %>"><%= StringUtils.escapeHTMLTags(mucname) %></a></b>
+<fmt:message key="groupchat.service.settings_affect" /> <b><a href="muc-service-edit-form.jsp?mucname=<%= URLEncoder.encode(mucname, StandardCharsets.UTF_8) %>"><%= StringUtils.escapeHTMLTags(mucname) %></a></b>
 </p>
 
-<%  if ("true".equals(request.getParameter("success"))) { %>
+<%  if (ParamUtils.getBooleanParameter(request, "success")) { %>
 
 <admin:infoBox type="success">
     <fmt:message key="groupchat.history.settings.saved_successfully" />

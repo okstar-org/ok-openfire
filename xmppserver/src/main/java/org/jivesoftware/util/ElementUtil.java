@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2009 Jive Software, 2017-2021 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2009 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,13 @@
 package org.jivesoftware.util;
 
 import org.dom4j.Element;
-import org.dom4j.Node;
 
 import java.util.*;
 
 /**
  * <p>We use a simple
  * naming convention of meta-data key names: data is stored
- * heirarchically separated by dots. The last name may contain
+ * hierarchically separated by dots. The last name may contain
  * a colon ':' character that is read as name:attribute.
  * For example setting X.Y.Z to someValue, would map to an XML snippet of:</p>
  * <pre>
@@ -143,7 +142,7 @@ public class ElementUtil {
 
     /**
      * Return all values who's path matches the given property name as a String array,
-     * or an empty array if the if there are no children. You MAY NOT use the atttribute
+     * or an empty array if the if there are no children. You MAY NOT use the attribute
      * markup (using a ':' in the last element name) with this call.
      * <p>
      * getProperties() allows you to retrieve several values with the same property name.
@@ -178,10 +177,10 @@ public class ElementUtil {
             }
         }
         // We found matching property, return names of children.
-        Iterator iter = element.elementIterator(propName[propName.length - 1]);
+        Iterator<Element> iter = element.elementIterator(propName[propName.length - 1]);
         ArrayList<String> props = new ArrayList<>();
         while (iter.hasNext()) {
-            Element e = (Element) iter.next();
+            Element e = iter.next();
             props.add(e.getName());
         }
         String[] childrenNames = new String[props.size()];
@@ -189,7 +188,7 @@ public class ElementUtil {
     }
 
     /**
-     * Sets a property to an array of values.  You MAY NOT use the atttribute
+     * Sets a property to an array of values.  You MAY NOT use the attribute
      * markup (using a ':' in the last element name) with this call. Multiple values matching the
      * same property is mapped to an XML file as multiple elements containing each value.
      * For example, using the name "foo.bar.prop", and the value string array containing
@@ -224,9 +223,9 @@ public class ElementUtil {
         }
         String childName = propName[propName.length - 1];
         // We found matching property, clear all children.
-        Iterator iter = element.elementIterator(childName);
+        Iterator<Element> iter = element.elementIterator(childName);
         while (iter.hasNext()) {
-            ((Node) iter.next()).detach();
+            iter.next().detach();
         }
         for (int j = 0; i < values.length; i++) {
             if (values[j] != null) {
@@ -237,7 +236,7 @@ public class ElementUtil {
 
     /**
      * Return all children property names of a parent property as a String array,
-     * or an empty array if the if there are no children. You MAY NOT use the atttribute
+     * or an empty array if the if there are no children. You MAY NOT use the attribute
      * markup (using a ':' in the last element name) with this call.
      * For example, given the properties {@code X.Y.A}, {@code X.Y.B}, and {@code X.Y.C}, then
      * the child properties of {@code X.Y} are {@code A}, {@code B}, and
@@ -305,7 +304,7 @@ public class ElementUtil {
      * @param value the new value for the property.
      */
     public static void setProperty(Element element, String name, String value) {
-        if (name == null || name.length() == 0) return;
+        if (name == null || name.isEmpty()) return;
         if (value == null) value = "";
 
         String[] propName = parsePropertyName(name);
@@ -345,7 +344,7 @@ public class ElementUtil {
 
     /**
      * <p>Deletes the specified property.</p>
-     * <p>You MAY NOT use the atttribute
+     * <p>You MAY NOT use the attribute
      * markup (using a ':' in the last element name) with this call.
      * deleteProperty() removes both the containing text, and the element itself along with
      * any attributes associated with that element.</p>

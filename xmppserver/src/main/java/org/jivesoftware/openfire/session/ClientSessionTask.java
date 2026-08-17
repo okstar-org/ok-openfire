@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2009 Jive Software, 2021-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2007-2009 Jive Software, 2021-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ import java.io.ObjectOutput;
  */
 public class ClientSessionTask extends RemoteSessionTask {
 
-    private static Logger logger = LoggerFactory.getLogger(ClientSessionTask.class);
+    private static final Logger logger = LoggerFactory.getLogger(ClientSessionTask.class);
 
     private JID address;
     private transient Session session;
@@ -61,7 +61,11 @@ public class ClientSessionTask extends RemoteSessionTask {
 
     public void run() {
         if (getSession() == null || getSession().isClosed()) {
-            logger.error("Session not found for JID: " + address);
+            if (this.operation == Operation.removeDetached) {
+                logger.debug("Asked to remove detached sessions for JID {}, but no such sessions exist.", address); // This is a rather likely scenario. Don't log an error for this (OF-3034).
+            } else {
+                logger.error("Unable to execute task for JID {}: {}", address, this, new IllegalStateException("Session not found for JID: " + address));
+            }
             return;
         }
         super.run();
@@ -84,6 +88,16 @@ public class ClientSessionTask extends RemoteSessionTask {
             }
             else {
                 result = session.isInitialized();
+            }
+        }
+        if (operation == Operation.isAnonymous) {
+            if (session instanceof RemoteClientSession) {
+                // Something is wrong since the session should be local instead of remote
+                // Assume some default value
+                result = false;
+            }
+            else {
+                result = session.isAnonymousUser();
             }
         }
         else if (operation == Operation.incrementConflictCount) {

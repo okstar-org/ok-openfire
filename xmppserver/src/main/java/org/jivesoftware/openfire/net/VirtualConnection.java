@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ public abstract class VirtualConnection extends AbstractConnection
 {
     private static final Logger Log = LoggerFactory.getLogger(VirtualConnection.class);
 
-    private final AtomicReference<State> state = new AtomicReference<State>(State.OPEN);
+    private final AtomicReference<State> state = new AtomicReference<>(State.OPEN);
 
     @Override
     public Certificate[] getLocalCertificates() {
@@ -113,20 +113,18 @@ public abstract class VirtualConnection extends AbstractConnection
     }
 
     /**
-     * Closes the session, the virtual connection and notifies listeners that the connection
-     * has been closed.
+     * Closes the session, the virtual connection and notifies listeners that the connection has been closed.
+     *
+     * Upon completion of all listeners and the virtual connection teardown, the stage returned by
+     * {@link #getCloseFuture()} is completed.
      *
      * @param error If non-null, the end-stream tag will be preceded with this error.
      */
     @Override
-    public void close(@Nullable final StreamError error, final boolean networkInterruption) {
+    public void close(@Nullable final StreamError error) {
         if (state.compareAndSet(State.OPEN, State.CLOSED)) {
             
             if (session != null) {
-                if (!networkInterruption) {
-                    // A 'clean' closure should never be resumed (see #onRemoteDisconnect for handling of unclean disconnects). OF-2752
-                    session.getStreamManager().formalClose();
-                }
                 session.setStatus(Session.Status.CLOSED);
             }
 
@@ -141,14 +139,20 @@ public abstract class VirtualConnection extends AbstractConnection
             // This fixes a very visible bug where MUC users would remain in the MUC room long after
             // their session was closed. Effectively, the bug prevents the MUC room from getting a
             // presence update to notify it that the user logged off.
-            notifyCloseListeners();
-            closeListeners.clear();
+            notifyCloseListeners().whenComplete((v,t) -> {
+                closeListeners.clear();
+                if (t != null) {
+                    Log.warn("Exception while invoking close listeners for {}", this, t);
+                }
 
-            try {
-                closeVirtualConnection(error);
-            } catch (Exception e) {
-                Log.error(LocaleUtils.getLocalizedString("admin.error.close") + "\n" + toString(), e);
-            }
+                try {
+                    closeVirtualConnection(error);
+                } catch (Exception e) {
+                    Log.error(LocaleUtils.getLocalizedString("admin.error.close") + "\n" + toString(), e);
+                } finally {
+                    completeCloseFuture();
+                }
+            });
         }
     }
 

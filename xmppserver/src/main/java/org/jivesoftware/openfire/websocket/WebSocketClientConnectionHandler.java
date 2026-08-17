@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Tom Evans, 2023-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2015 Tom Evans, 2023-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,10 @@ package org.jivesoftware.openfire.websocket;
 
 import org.apache.commons.pool2.impl.GenericObjectPool;
 import org.dom4j.io.XMPPPacketReader;
-import org.eclipse.jetty.websocket.api.RemoteEndpoint;
-import org.eclipse.jetty.websocket.api.Session;
-import org.eclipse.jetty.websocket.api.annotations.*;
+import org.eclipse.jetty.ee8.websocket.api.RemoteEndpoint;
+import org.eclipse.jetty.ee8.websocket.api.Session;
+import org.eclipse.jetty.ee8.websocket.api.WriteCallback;
+import org.eclipse.jetty.ee8.websocket.api.annotations.*;
 import org.jivesoftware.openfire.*;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
 import org.jivesoftware.openfire.handler.IQPingHandler;
@@ -37,7 +38,6 @@ import org.xmpp.packet.IQ;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.StreamError;
 
-import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.time.Instant;
@@ -87,8 +87,8 @@ public class WebSocketClientConnectionHandler
     private WebSocketConnection wsConnection;
     private TimerTask websocketFramePingTask;
     private TimerTask xmppSessionIdleTask;
-    private Instant lastReceived = Instant.now();
-    private Instant lastWebsocketPing = Instant.now();
+    private volatile Instant lastReceived = Instant.now();
+    private volatile Instant lastWebsocketPing = Instant.now();
 
     public WebSocketClientConnectionHandler() {
         if (readerPool == null) {
@@ -170,20 +170,18 @@ public class WebSocketClientConnectionHandler
     public void onError(Throwable error)
     {
         Log.debug("Error detected; connection: {}, session: {}", wsConnection, wsSession, error);
-        synchronized (this) {
-            try {
-                if (isWebSocketOpen()) {
-                    Log.warn("Attempting to close connection on which an error occurred: {}", wsConnection, error);
-                    wsConnection.close(new StreamError(StreamError.Condition.internal_server_error), !isWebSocketOpen());
-                } else {
-                    Log.debug("Error detected on websocket that isn't open (any more):", error);
-                    wsConnection.close(null, !isWebSocketOpen());
-                }
-            } catch (Exception e) {
-                Log.error("Error disconnecting websocket", e);
-            } finally {
-                wsSession = null;
+        try {
+            if (isWebSocketOpen()) {
+                Log.warn("Attempting to close connection on which an error occurred: {}", wsConnection, error);
+                wsConnection.close(new StreamError(StreamError.Condition.internal_server_error));
+            } else {
+                Log.debug("Error detected on websocket that isn't open (any more):", error);
+                wsConnection.close(null);
             }
+        } catch (Exception e) {
+            Log.error("Error disconnecting websocket", e);
+        } finally {
+            wsSession = null;
         }
     }
 
@@ -226,7 +224,7 @@ public class WebSocketClientConnectionHandler
             readerPool.setMaxTotal(-1);
             readerPool.setBlockWhenExhausted(false);
             readerPool.setTestOnReturn(true);
-            readerPool.setTimeBetweenEvictionRunsMillis(Duration.ofMinutes(1).toMillis());
+            readerPool.setDurationBetweenEvictionRuns(Duration.ofMinutes(1));
         }
     }
 
@@ -242,7 +240,15 @@ public class WebSocketClientConnectionHandler
     //-- Keep-alive ping for idle peers
 
     /**
-     * Task that periodically sends websocket pings, to prevent the websocket transport from being closed.
+     * Task that periodically sends WebSocket frame pings to prevent the transport from being closed.
+     *
+     * Uses the async {@code sendPing(ByteBuffer, WriteCallback)} overload so the call returns immediately and never
+     * blocks the calling thread while waiting for the remote peer. On send failure the connection is closed
+     * immediately, as a failed ping unambiguously indicates the transport is no longer viable.
+     *
+     * Note: an XMPP ping response (XEP-0199) is an inbound text stanza and therefore does update lastReceived, which
+     * will naturally defer or suppress a WebSocket ping. This implicit coupling is correct: an XMPP-layer response is a
+     * strict superset of transport-layer liveness.
      */
     private final class WebsocketFramePingTask extends TimerTask
     {
@@ -258,14 +264,26 @@ public class WebSocketClientConnectionHandler
                 final Duration shortest = inactive.compareTo(sinceLastPing) > 0 ? sinceLastPing : inactive;
                 final Duration maxIdleTime = KEEP_ALIVE_FRAME_PING_INTERVAL_PROPERTY.getValue().dividedBy(10).multipliedBy(9);
                 if (shortest.compareTo(maxIdleTime) > 0) {
+                    Log.trace("Remote peer was inactive for {}. Sending websocket ping to: {}", shortest, wsConnection);
                     try {
-                        Log.trace("Remote peer was inactive for {}. Sending websocket ping to: {}", shortest, wsConnection);
-                        // see https://tools.ietf.org/html/rfc6455#section-5.5.2
-                        wsSession.getRemote().sendPing(null);
-                        lastWebsocketPing = Instant.now();
-                    } catch (IOException ioe) {
-                        // Log the issue, but no need to act: IdleTask will eventually clean up this websocket.
-                        Log.warn("Unable to send websocket ping to remote peer: {}", wsConnection, ioe);
+                        wsSession.getRemote().sendPing(null, new WriteCallback() {
+                            @Override
+                            public void writeSuccess() {
+                                lastWebsocketPing = Instant.now();
+                            }
+
+                            @Override
+                            public void writeFailed(Throwable error) {
+                                Log.debug("Unable to send websocket ping to remote peer; closing connection: {}", wsConnection, error);
+                                if (isWebSocketOpen()) {
+                                    wsConnection.close(new StreamError(StreamError.Condition.connection_timeout, "Closing connection: unable to send websocket ping to remote peer."));
+                                }
+                            }
+                        });
+                    } catch (Throwable error) {
+                        // Prevent an exception that would escape TimerTask.run() and can stop future executions.
+                        Log.debug("Unable to send websocket ping to remote peer; closing connection: {}", wsConnection, error);
+                        wsConnection.close(new StreamError(StreamError.Condition.connection_timeout, "Closing connection: remote peer did not respond to websocket ping."));
                     }
                 }
             }
@@ -274,6 +292,11 @@ public class WebSocketClientConnectionHandler
 
     /**
      * Task that, on prolonged inactivity, sends an XMPP ping, to ensure that the remote entity is still responsive.
+     *
+     * Note: WebSocket frame pongs are intentionally not reflected in lastReceived. The WebSocket ping confirms
+     * transport-layer liveness; this task probes the application layer independently. A client whose XMPP stack is
+     * frozen may still return WebSocket pongs via the OS/stack, so these two probes should remain independent to catch
+     * that failure mode.
      */
     private final class XmppSessionIdleTask extends TimerTask {
         private Instant pendingPingSentAt = null;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2021 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2019-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,8 +41,10 @@ import java.util.List;
  * the 'https://xmlns.zombofant.net/muclumbus/search/1.0' namespace.
  *
  * @author Guus der Kinderen, guus.der.kinderen@gmail.com
- * @see <a href="https://search.jabbercat.org/docs/api>https://search.jabbercat.org/docs/api</a>
+ * @see <a href="https://search.jabbercat.org/docs/api">https://search.jabbercat.org/docs/api</a>
+ * @deprecated The protocol defined herein was formalized (with minor changes) as XEP-0433, which is implemented in {@link IQExtendedChannelSearchHandler}
  */
+@Deprecated(since = "5.0.0", forRemoval = true) // Remove after search.jabber.network switches to using XEP-0433.
 public class IQMuclumbusSearchHandler
 {
     public static final String VAR_SINNAME = "sinname";
@@ -56,7 +58,7 @@ public class IQMuclumbusSearchHandler
     public static SystemProperty<Boolean> PROPERTY_ENABLED = SystemProperty.Builder.ofType( Boolean.class )
         .setKey( "xmpp.muc.muclumbus.v1-0.enabled" )
         .setDynamic( true )
-        .setDefaultValue( true )
+        .setDefaultValue( false ) // As this service is now deprecated, disable it by default.
         .build();
 
     public static final String REQUEST_ELEMENT_NAME = "search";
@@ -192,16 +194,10 @@ public class IQMuclumbusSearchHandler
         // Search for chatrooms matching the request params.
         List<MUCRoomSearchInfo> mucs = searchForChatrooms( params );
 
-        switch ( params.getKey() )
-        {
-            case nusers:
-                mucs = sortByUserAmount( mucs );
-                break;
-
-            case address:
-                mucs = sortByAddress( mucs );
-                break;
-        }
+        mucs = switch (params.getKey()) {
+            case nusers  -> sortByUserAmount(mucs);
+            case address -> sortByAddress(mucs);
+        };
 
         final ResultSet<MUCRoomSearchInfo> searchResults = new ResultSetImpl<>( mucs );
 

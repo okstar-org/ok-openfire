@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2020 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,10 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
 
+import org.dom4j.Attribute;
+import org.dom4j.Element;
+import org.dom4j.Namespace;
+import org.dom4j.QName;
 import org.jivesoftware.openfire.IQHandlerInfo;
 import org.jivesoftware.openfire.PacketException;
 import org.jivesoftware.openfire.PacketRouter;
@@ -158,7 +162,7 @@ public class IQRosterHandler extends IQHandler implements ServerFeaturesProvider
      * The packet is a typical 'set' or 'get' update targeted at the server.
      * Notice that the set could be a roster removal in which case we have to
      * generate a local roster removal update as well as a new roster removal
-     * to send to the the roster item's owner.
+     * to send to the roster item's owner.
      *
      * @param packet The packet that triggered this update
      * @return Either a response to the roster update or null if the packet is corrupt and the session was closed down
@@ -191,7 +195,7 @@ public class IQRosterHandler extends IQHandler implements ServerFeaturesProvider
 
                 if (RosterManager.isRosterVersioningEnabled()) {
                     String clientVersion = packet.getChildElement().attributeValue("ver");
-                    String latestVersion = String.valueOf( cachedRoster.hashCode() );
+                    String latestVersion = String.valueOf( cachedRoster.getVersion() );
                     // Whether or not the roster has been modified since the version ID enumerated by the client, ...
                     if (!latestVersion.equals(clientVersion)) {
                         // ... the server MUST either return the complete roster
@@ -214,17 +218,20 @@ public class IQRosterHandler extends IQHandler implements ServerFeaturesProvider
                 returnPacket = null;
             }
             else if (IQ.Type.set == type) {
+                // RFC 6121 section 2.1.5 defines: The following rules apply to roster sets: [...] The server MUST
+                // ignore any value of the 'subscription' attribute other than "remove"
+                final org.xmpp.packet.Roster copy = ignoreNonRemoveSubscriptionValues(packet);
                 returnPacket = IQ.createResultIQ(packet);
 
                 // RFC 6121 2.3.3.  Error Cases:
                 // The server MUST return a <bad-request/> stanza error to the client if the roster set contains any of the following violations:
                 // The <query/> element contains more than one <item/> child element.
-                if (packet.getItems().size() > 1) {
+                if (copy.getItems().size() > 1) {
                     returnPacket.setError(new PacketError(PacketError.Condition.bad_request, PacketError.Type.modify, "Query contains more than one item"));
                 } else {
-                    for (org.xmpp.packet.Roster.Item item : packet.getItems()) {
+                    for (org.xmpp.packet.Roster.Item item : copy.getItems()) {
                         if (item.getSubscription() == org.xmpp.packet.Roster.Subscription.remove) {
-                            if (removeItem(cachedRoster, packet.getFrom(), item) == null) {
+                            if (removeItem(cachedRoster, copy.getFrom(), item) == null) {
                                 // RFC 6121 2.5.3.  Error Cases: If the value of the 'jid' attribute specifies an item that is not in the roster, then the server MUST return an <item-not-found/> stanza error.
                                 returnPacket.setError(PacketError.Condition.item_not_found);
                             }
@@ -254,6 +261,29 @@ public class IQRosterHandler extends IQHandler implements ServerFeaturesProvider
 
         return returnPacket;
 
+    }
+
+    /**
+     * Removes all 'subscription' attributes of which the value is not 'remove'. The input value is not modified. A
+     * defensive copy is created, to which modifications are applied.
+     *
+     * @param stanza A roster stanza representation
+     * @return a copy of the input with all offending subscription values removed.
+     */
+    public static org.xmpp.packet.Roster ignoreNonRemoveSubscriptionValues(org.xmpp.packet.Roster stanza)
+    {
+        final org.xmpp.packet.Roster result = stanza.createCopy();
+        final Element query = result.getElement().element(new QName("query", Namespace.get("jabber:iq:roster")));
+        if (query != null) {
+            for (Iterator<Element> i = query.elementIterator("item"); i.hasNext(); ) {
+                final Element item = i.next();
+                final Attribute subscription = item.attribute("subscription");
+                if (subscription != null && !"remove".equals(subscription.getValue())) {
+                    item.remove(subscription);
+                }
+            }
+        }
+        return result;
     }
 
     /**

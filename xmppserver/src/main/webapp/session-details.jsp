@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@
 
 <%@ page import="org.jivesoftware.openfire.PresenceManager,
                  org.jivesoftware.openfire.SessionManager,
-                 org.jivesoftware.openfire.session.ClientSession,
-                 org.jivesoftware.openfire.session.LocalClientSession,
                  org.jivesoftware.openfire.user.User,
                  org.jivesoftware.openfire.user.UserManager,
                  org.jivesoftware.util.JiveGlobals,
@@ -40,6 +38,8 @@
 <%@ page import="java.util.TreeSet" %>
 <%@ page import="org.jivesoftware.openfire.cluster.ClusterManager" %>
 <%@ page import="org.slf4j.LoggerFactory" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
+<%@ page import="org.jivesoftware.openfire.session.*" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
@@ -68,9 +68,7 @@
         JID address = new JID(jid);
         try {
             Session sess = sessionManager.getSession(address);
-            if (sess instanceof LocalClientSession) {
-                ((LocalClientSession) sess).getStreamManager().formalClose();
-            }
+            sess.markNonResumable();
             sess.close();
             // Log the event
             webManager.logEvent("closed session for address "+address, null);
@@ -121,7 +119,7 @@
     // Handle a "message" click:
     if (request.getParameter("message") != null) {
         if (csrfCookie != null && csrfParam != null && csrfCookie.getValue().equals(csrfParam)) {
-            response.sendRedirect("user-message.jsp?username=" + URLEncoder.encode(user.getUsername(), "UTF-8"));
+            response.sendRedirect("user-message.jsp?username=" + URLEncoder.encode(user.getUsername(), StandardCharsets.UTF_8));
             return;
         }
     }
@@ -130,7 +128,7 @@
     Collection<ClientSession> sessions = null;
     int sessionCount = sessionManager.getSessionCount(address.getNode());
     if (!isAnonymous && sessionCount > 1) {
-        sessions = sessionManager.getSessions(address.getNode());
+        sessions = sessionManager.getSessions(address);
     }
 
     // Number dateFormatter for all numbers on this page:
@@ -183,12 +181,12 @@
             <%  String n = address.getNode(); %>
             <%  if (isAnonymous) { %>
 
-                <i> <fmt:message key="session.details.anonymous" /> </i> - <%= address.getResource()==null?"":StringUtils.escapeHTMLTags(address.getResource()) %>
+                <i> <fmt:message key="session.details.anonymous" /> </i> - <%= StringUtils.escapeHTMLTags(address.getResource()) %>
 
             <%  } else { %>
 
-                <a href="user-properties.jsp?username=<%= URLEncoder.encode(n, "UTF-8") %>"><%= StringUtils.escapeHTMLTags(JID.unescapeNode(n)) %></a>
-                - <%= address.getResource()==null?"":StringUtils.escapeForXML(address.getResource()) %>
+                <a href="user-properties.jsp?username=<%= URLEncoder.encode(n, StandardCharsets.UTF_8) %>"><%= StringUtils.escapeHTMLTags(JID.unescapeNode(n)) %></a>
+                - <%= StringUtils.escapeForXML(address.getResource()) %>
 
             <%  } %>
         </td>
@@ -381,7 +379,7 @@
                     </td>
                     <td>
                         <%
-                            if (currentSess instanceof LocalClientSession && ((LocalClientSession) currentSess).isDetached()) { %>
+                            if (currentSess.isDetached()) { %>
                         <fmt:message key="session.details.sm-detached"/>
                         <% } else {
                             try { %>
@@ -459,6 +457,16 @@
                     </td>
                     <td>
                         <%=StringUtils.escapeHTMLTags(((LocalSession) currentSess).getSessionData("SaslMechanism").toString())%>
+                    </td>
+                </tr>
+                <% } %>
+                <% if (currentSess instanceof LocalSession && ((LocalSession) currentSess).getSessionData("ChannelBindingType") != null) { %>
+                <tr>
+                    <td class="c1">
+                        <fmt:message key="session.details.channel-binding-type"/>:
+                    </td>
+                    <td>
+                        <%=StringUtils.escapeHTMLTags(((LocalSession) currentSess).getSessionData("ChannelBindingType").toString())%>
                     </td>
                 </tr>
                 <% } %>

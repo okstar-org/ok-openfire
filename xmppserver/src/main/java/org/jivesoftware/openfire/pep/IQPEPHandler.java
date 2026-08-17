@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -366,15 +366,11 @@ public class IQPEPHandler extends IQHandler implements ServerIdentitiesProvider,
         if (packet.getTo() == null || packet.getTo().equals( new JID(XMPPServer.getInstance().getServerInfo().getXMPPDomain())) )
         {
             // packet addressed to service itself (not to a node/user)
-            switch ( packet.getType() )
-            {
-                case set:
-                    return handleIQSetToService(packet );
-                case get:
-                    return handleIQGetToService(packet );
-                default:
-                    return null; // Ignore 'error' and 'result' stanzas.
-            }
+            return switch (packet.getType()) {
+                case set -> handleIQSetToService(packet);
+                case get -> handleIQGetToService(packet);
+                default -> null; // Ignore 'error' and 'result' stanzas.
+            };
         }
         else
         {
@@ -589,10 +585,9 @@ public class IQPEPHandler extends IQHandler implements ServerIdentitiesProvider,
 
         // Cancel unsubscriberJID's subscription to recipientJID's PEP service, if it exists.
         CollectionNode rootNode = pepService.getRootCollectionNode();
-        NodeSubscription nodeSubscription = rootNode.getSubscription(unsubscriber);
-        if (nodeSubscription != null) {
-            rootNode.cancelSubscription(nodeSubscription);
-        }
+        rootNode.getSubscriptionsByJID(unsubscriber).forEach(
+            rootNode::cancelSubscription
+        );
     }
 
     /**
@@ -850,6 +845,8 @@ public class IQPEPHandler extends IQHandler implements ServerIdentitiesProvider,
                             item.getSubStatus() == RosterItem.SUB_TO)) {
                         PEPService pepService = pepServiceManager.getPEPService(item.getJid().asBareJID());
                         if (pepService != null) {
+                            pepService.getRootCollectionNode().getSubscriptions(availableSessionJID);
+                            pepService.getRootCollectionNode().getAccessModel().canAccessItems(pepService.getRootCollectionNode(), availableSessionJID, availableSessionJID);
                             pepService.sendLastPublishedItems(availableSessionJID);
                         }
                     }

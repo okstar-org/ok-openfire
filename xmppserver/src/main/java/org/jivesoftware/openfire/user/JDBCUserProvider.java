@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -235,10 +235,15 @@ public class JDBCUserProvider implements UserProvider {
             con = getConnection();
             if ((startIndex==0) && (numResults==Integer.MAX_VALUE))
             {
-                pstmt = con.prepareStatement(allUsersSQL);
+                // MSSQL differentiates between client-cursored and server-cursored result sets. For server-cursored result
+                // sets, the fetch buffer and scroll window are the same size (as opposed to fetch buffer containing all
+                // the rows). To hint that a server-cursored result set is desired, it should be configured to be 'forward
+                // only' as well as 'read only'.
+                pstmt = con.prepareStatement(allUsersSQL, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
                 // Set the fetch size. This will prevent some JDBC drivers from trying
                 // to load the entire result set into memory.
                 DbConnectionManager.setFetchSize(pstmt, 500);
+                pstmt.setFetchDirection(ResultSet.FETCH_FORWARD);
                 rs = pstmt.executeQuery();
                 while (rs.next()) {
                     // OF-1837: When the database does not hold escaped data, escape values before processing them further.
@@ -339,7 +344,7 @@ public class JDBCUserProvider implements UserProvider {
         if (!getSearchFields().containsAll(fields)) {
             throw new IllegalArgumentException("Search fields " + fields + " are not valid.");
         }
-        if (query == null || "".equals(query)) {
+        if (query == null || query.isEmpty()) {
             return Collections.emptyList();
         }
         // SQL LIKE queries don't map directly into a keyword/wildcard search like we want.

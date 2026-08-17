@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,7 +74,7 @@ public final class MUCRoomHistory implements Externalizable {
         // Don't keep messages whose sender is the room itself (thus address without resource)
         // unless the message is changing the room's subject
         if (!isSubjectChangeRequest &&
-            (fromJID == null || fromJID.toString().length() == 0 ||
+            (fromJID == null || fromJID.toString().isEmpty() ||
              fromJID.equals(getRoom().getSelfRepresentation().getOccupantJID()))) {
             return;
         }
@@ -85,7 +85,7 @@ public final class MUCRoomHistory implements Externalizable {
 
         // Ignore empty messages (no subject AND no body)
         if (!isSubjectChangeRequest &&
-            (packet.getBody() == null || packet.getBody().trim().length() == 0)) {
+            (packet.getBody() == null || packet.getBody().trim().isEmpty())) {
             return;
         }
 
@@ -102,7 +102,7 @@ public final class MUCRoomHistory implements Externalizable {
                 if (getRoom().canAnyoneDiscoverJID()) {
                     // Set the Full JID as the "from" attribute // TODO: This is pretty dodgy, as it depends on the user still being in the room. JIDs _should_ have been stored with the message.
                     try {
-                        List<MUCRole> occupants = getRoom().getOccupantsByNickname(message.getFrom().getResource());
+                        List<MUCOccupant> occupants = getRoom().getOccupantsByNickname(message.getFrom().getResource());
                         if (!occupants.isEmpty()) {
                             delayElement.addAttribute("from", occupants.get(0).getUserAddress().toString());
                         }
@@ -126,7 +126,7 @@ public final class MUCRoomHistory implements Externalizable {
         if (getRoom().canAnyoneDiscoverJID()) {
             // Set the Full JID as the "from" attribute // TODO: This is pretty dodgy, as it depends on the user still being in the room. JIDs _should_ have been stored with the message.
             try {
-                List<MUCRole> occupants = getRoom().getOccupantsByNickname(packet.getFrom().getResource());
+                List<MUCOccupant> occupants = getRoom().getOccupantsByNickname(packet.getFrom().getResource());
                 if (!occupants.isEmpty()) {
                     delayInformation.addAttribute("from", occupants.get(0).getUserAddress().toString());
                 }
@@ -229,7 +229,7 @@ public final class MUCRoomHistory implements Externalizable {
         message.setSubject(subject);
         message.setBody(body);
         // Set the sender of the message
-        if (nickname != null && nickname.trim().length() > 0) {
+        if (nickname != null && !nickname.trim().isEmpty()) {
             JID roomJID = getRoom().getSelfRepresentation().getOccupantJID();
             // Recreate the sender address based on the nickname and room's JID
             message.setFrom(new JID(roomJID.getNode(), roomJID.getDomain(), nickname, true));
@@ -286,7 +286,9 @@ public final class MUCRoomHistory implements Externalizable {
      *
      * @return true if there is a message within the history of the room that has changed the
      *         room's subject.
+     * @deprecated Since Openfire 5.1.0, a room's subject is managed by {@link MUCRoom} directly.
      */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
     public boolean hasChangedSubject() {
         return historyStrategy.hasChangedSubject();
     }
@@ -296,7 +298,9 @@ public final class MUCRoomHistory implements Externalizable {
      * room's subject.
      * 
      * @return the latest room subject change or null if none exists yet.
+     * @deprecated Since Openfire 5.1.0, a room's subject is managed by {@link MUCRoom} directly.
      */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
     @Nullable
     public Message getChangedSubject() {
         return historyStrategy.getChangedSubject();
@@ -307,7 +311,9 @@ public final class MUCRoomHistory implements Externalizable {
      *
      * @param message the message to check
      * @return true if the given packet is a subject change request
+     * @deprecated Since Openfire 5.1.0, a room's subject is managed by {@link MUCRoom} directly.
      */
+    @Deprecated
     public boolean isSubjectChangeRequest(Message message) {
         return historyStrategy.isSubjectChangeRequest(message);
     }
@@ -315,10 +321,14 @@ public final class MUCRoomHistory implements Externalizable {
     /**
      * Returns the maximum number of messages that is kept in history for this room, or -1 when there is no such limit.
      *
-     * @return The maximum amount of historic messages to keep for this room, or -1.
+     * @return The maximum number of historic messages to keep for this room, or -1.
      */
     public int getMaxMessages() {
-        return historyStrategy.getType() == HistoryStrategy.Type.number ? historyStrategy.getMaxNumber() : -1;
+        return switch (historyStrategy.getType()) {
+            case number -> historyStrategy.getMaxNumber();
+            case none -> 0;
+            default -> -1;
+        };
     }
 
     @Override

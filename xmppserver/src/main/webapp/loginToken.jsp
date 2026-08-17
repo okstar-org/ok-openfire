@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2019-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2019-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@
             try {
                 URL u = new URL(url);
                 StringBuilder s = new StringBuilder();
-                if (u.getPath().equals("")) {
+                if (u.getPath().isEmpty()) {
                     s.append("/");
                 } else {
                     s.append(u.getPath());
@@ -82,7 +82,7 @@
     String token = ParamUtils.getParameter(request, "token");
 
     String url = ParamUtils.getParameter(request, "url");
-    url = org.jivesoftware.util.StringUtils.escapeHTMLTags(url);
+    url = StringUtils.escapeHTMLTags(url);
 
     // SSO between cluster nodes
     String secret = ParamUtils.getParameter(request, "secret");
@@ -216,7 +216,7 @@
                                     </tbody>
                                 </table>
                             </noscript>
-                            <%  if (errors.size() > 0) { %>
+                            <%  if (!errors.isEmpty()) { %>
                             <% for (String error:errors.values()) { %>
                             <table class="table table-sm table-responsive table-borderless">
                                 <tbody>

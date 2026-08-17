@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2015 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,17 @@
  */
 package org.jivesoftware.openfire.admin;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.StringTokenizer;
-
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.SystemProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.JID;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.StringTokenizer;
 
 /**
  * Handles default management of admin users, which stores the list if accounts as a system property.
@@ -39,7 +39,7 @@ public class DefaultAdminProvider implements AdminProvider {
         .setDefaultValue(Collections.emptyList())
         .setSorted(true)
         .setDynamic(true)
-        .addListener(jids -> AdminManager.getInstance().refreshAdminAccounts())
+        .addListener(jids -> { if (AdminManager.getAdminProvider() != null) AdminManager.getInstance().refreshAdminAccounts(); })
         .buildList(JID.class);
     private static final Logger Log = LoggerFactory.getLogger(DefaultAdminProvider.class);
 
@@ -47,7 +47,6 @@ public class DefaultAdminProvider implements AdminProvider {
      * Constructs a new DefaultAdminProvider
      */
     public DefaultAdminProvider() {
-
         // Convert old openfire.xml style to new provider style, if necessary.
         Log.debug("DefaultAdminProvider: Convert XML to provider.");
         convertXMLToProvider();
@@ -110,7 +109,7 @@ public class DefaultAdminProvider implements AdminProvider {
 
         // Add bare JIDs of users that are admins (may include remote users), primarily used to override/add to list of admin users
         String jids = JiveGlobals.getXMLProperty("admin.authorizedJIDs");
-        jids = (jids == null || jids.trim().length() == 0) ? "" : jids;
+        jids = (jids == null || jids.trim().isEmpty()) ? "" : jids;
         StringTokenizer tokenizer = new StringTokenizer(jids, ",");
         while (tokenizer.hasMoreTokens()) {
             final String jid = tokenizer.nextToken().toLowerCase().trim();
@@ -129,7 +128,7 @@ public class DefaultAdminProvider implements AdminProvider {
             usernames = JiveGlobals.getXMLProperty("adminConsole.authorizedUsernames");
         }
         // Add default of admin user if no other users were listed as admins.
-        usernames = (usernames == null || usernames.trim().length() == 0) ? (adminList.size() == 0 ? "admin" : "") : usernames;
+        usernames = (usernames == null || usernames.trim().isEmpty()) ? (adminList.isEmpty() ? "admin" : "") : usernames;
         tokenizer = new StringTokenizer(usernames, ",");
         while (tokenizer.hasMoreTokens()) {
             final String username = tokenizer.nextToken();

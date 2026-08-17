@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2016-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,7 @@ import org.jivesoftware.openfire.cluster.ClusteredCacheEntryListener;
 import org.jivesoftware.openfire.cluster.NodeID;
 import org.jivesoftware.openfire.event.GroupEventDispatcher;
 import org.jivesoftware.openfire.event.UserEventDispatcher;
-import org.jivesoftware.openfire.muc.MUCRole;
-import org.jivesoftware.openfire.muc.MUCRoom;
-import org.jivesoftware.openfire.muc.MultiUserChatService;
-import org.jivesoftware.openfire.muc.NotAllowedException;
+import org.jivesoftware.openfire.muc.*;
 import org.jivesoftware.openfire.spi.RoutingTableImpl;
 import org.jivesoftware.openfire.user.UserNotFoundException;
 import org.jivesoftware.util.cache.Cache;
@@ -84,6 +81,15 @@ public class LocalMUCRoomManager
      * The key used in {@link #ROOM_CACHE_STATS} to keep track of the amount of non-persistent rooms in the cache.
      */
     private static final String STAT_KEY_ROOMCOUNT_NONPERSISTENT = "Amount of MUC rooms (non-persistent)";
+
+    /**
+     * A cluser-local count of non-persistent rooms, used to generate statistics without iterating over all rooms in
+     * the cluster.
+     *
+     * Access is guarded by a lock obtained from {@link #ROOM_CACHE_STATS} using the value in
+     * {@link #STAT_KEY_ROOMCOUNT_NONPERSISTENT} as a key.
+     */
+    private long localNonPersistentRoomCount = 0;
 
     /**
      * A cluster-local copy of rooms, used to (re)populating #ROOM_CACHE upon cluster join or leave.
@@ -146,9 +152,9 @@ public class LocalMUCRoomManager
         lock.lock();
         try {
             Log.trace("Adding room '{}' of service '{}'", room.getName(), serviceName);
-            final MUCRoom oldValue = ROOM_CACHE.put(room.getName(), room);
+            ROOM_CACHE.put(room.getName(), room);
             localRooms.put(room.getName(), room);
-            updateNonPersistentRoomStat(oldValue, room);
+            updateNonPersistentRoomStat();
         } finally {
             lock.unlock();
         }
@@ -172,12 +178,11 @@ public class LocalMUCRoomManager
             if (room.isDestroyed) {
                 ROOM_CACHE.remove(room.getName());
                 localRooms.remove(room.getName());
-                updateNonPersistentRoomStat(null, room);
             } else {
-                final MUCRoom oldValue = ROOM_CACHE.put(room.getName(), room);
+                ROOM_CACHE.put(room.getName(), room);
                 localRooms.put(room.getName(), room);
-                updateNonPersistentRoomStat(oldValue, room);
             }
+            updateNonPersistentRoomStat();
         } finally {
             lock.unlock();
         }
@@ -230,7 +235,7 @@ public class LocalMUCRoomManager
                 room.getRoomHistory().purge();
                 GroupEventDispatcher.removeListener(room);
                 UserEventDispatcher.removeListener(room);
-                updateNonPersistentRoomStat(room, null);
+                updateNonPersistentRoomStat();
             }
             localRooms.remove(roomName);
             return room;
@@ -304,7 +309,7 @@ public class LocalMUCRoomManager
                 if (!ROOM_CACHE.containsKey(roomName)) {
                     Log.trace("Room was not known to the cluster. Added our representation.");
                     ROOM_CACHE.put(roomName, localRoom);
-                    updateNonPersistentRoomStat(null, localRoom);
+                    updateNonPersistentRoomStat();
                 } else {
                     Log.trace("Room was known to the cluster. Merging our local representation with cluster-provided data.");
                     final MUCRoom roomInCluster = ROOM_CACHE.get(roomName);
@@ -315,7 +320,7 @@ public class LocalMUCRoomManager
                         Log.trace("These occupants of the room are recognized as living on our cluster node. Adding them from the cluster-based room: {}", localOccupantsToRestore.stream().map(OccupantManager.Occupant::getRealJID).map(JID::toString).collect(Collectors.joining( ", " )));
                         for (OccupantManager.Occupant localOccupantToRestore : localOccupantsToRestore ) {
                             // Get the Role for the local occupant from the local representation of the room, and add that to the cluster room.
-                            final MUCRole localOccupant = localRoom.getOccupantByFullJID(localOccupantToRestore.getRealJID());
+                            final MUCOccupant localOccupant = localRoom.getOccupantByFullJID(localOccupantToRestore.getRealJID());
 
                             if (localOccupant == null) {
                                 Log.trace("Trying to add occupant '{}' but no role for that occupant exists in the local room. Data inconsistency?", localOccupantToRestore.getRealJID());
@@ -330,8 +335,8 @@ public class LocalMUCRoomManager
                             String nickBeingAddedToRoom = localOccupant.getNickname();
                             boolean occupantWasKicked = false;
                             try {
-                                final List<MUCRole> existingOccupantsWithSameNick = roomInCluster.getOccupantsByNickname(nickBeingAddedToRoom);
-                                final List<JID> otherUsersWithSameNick = existingOccupantsWithSameNick.stream().map(MUCRole::getUserAddress).filter(bareJid -> !bareJid.equals(localOccupant.getUserAddress())).collect(Collectors.toList());
+                                final List<MUCOccupant> existingOccupantsWithSameNick = roomInCluster.getOccupantsByNickname(nickBeingAddedToRoom);
+                                final List<JID> otherUsersWithSameNick = existingOccupantsWithSameNick.stream().map(MUCOccupant::getUserAddress).filter(bareJid -> !bareJid.equals(localOccupant.getUserAddress())).collect(Collectors.toList());
                                 if (!otherUsersWithSameNick.isEmpty()) {
 
                                     // We will be routing presences to several users. The routing table may not have
@@ -383,7 +388,7 @@ public class LocalMUCRoomManager
                     }
 
                     // Sync room back to make cluster aware of changes.
-                    Log.debug("Re-added local room '{}' to cache, with occupants: {}", roomName, roomInCluster.getOccupants().stream().map(MUCRole::getUserAddress).map(JID::toString).collect(Collectors.joining( ", " )));
+                    Log.debug("Re-added local room '{}' to cache, with occupants: {}", roomName, roomInCluster.getOccupants().stream().map(MUCOccupant::getUserAddress).map(JID::toString).collect(Collectors.joining( ", " )));
                     ROOM_CACHE.put(roomName, roomInCluster);
                     // The implementation of this method does not allow configuration to be changed that warrants a update toe ROOM_CACHE_STATS
 
@@ -395,39 +400,48 @@ public class LocalMUCRoomManager
         }
 
         // Add a cluster listener to clean up locally stored data when another cluster node removes it from the cache.
-        ROOM_CACHE.addClusteredCacheEntryListener(new ClusteredCacheEntryListener<String, MUCRoom>() {
+        ROOM_CACHE.addClusteredCacheEntryListener(new ClusteredCacheEntryListener<>()
+        {
             @Override
-            public void entryAdded(@Nonnull String key, @Nullable MUCRoom newValue, @Nonnull NodeID nodeID) {
+            public void entryAdded(@Nonnull String key, @Nullable MUCRoom newValue, @Nonnull NodeID nodeID)
+            {
             }
 
             @Override
-            public void entryRemoved(@Nonnull String key, @Nullable MUCRoom oldValue, @Nonnull NodeID nodeID) {
+            public void entryRemoved(@Nonnull String key, @Nullable MUCRoom oldValue, @Nonnull NodeID nodeID)
+            {
                 localRooms.remove(key);
                 final MultiUserChatService service = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatService(serviceName);
                 if (service != null) {
-                    service.getOccupantManager().roomDestroyed(new JID(key, service.getServiceDomain(), null));
+                    final long roomID = -1; // Unused by OccupantManager.
+                    service.getOccupantManager().roomDestroyed(roomID, new JID(key, service.getServiceDomain(), null));
                 }
             }
 
             @Override
-            public void entryUpdated(@Nonnull String key, @Nullable MUCRoom oldValue, @Nullable MUCRoom newValue, @Nonnull NodeID nodeID) {
+            public void entryUpdated(@Nonnull String key, @Nullable MUCRoom oldValue, @Nullable MUCRoom newValue, @Nonnull NodeID nodeID)
+            {
             }
 
             @Override
-            public void entryEvicted(@Nonnull String key, @Nullable MUCRoom oldValue, @Nonnull NodeID nodeID) {
+            public void entryEvicted(@Nonnull String key, @Nullable MUCRoom oldValue, @Nonnull NodeID nodeID)
+            {
                 localRooms.remove(key);
                 final MultiUserChatService service = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatService(serviceName);
                 if (service != null) {
-                    service.getOccupantManager().roomDestroyed(new JID(key, service.getServiceDomain(), null));
+                    final long roomID = -1; // Unused by OccupantManager.
+                    service.getOccupantManager().roomDestroyed(roomID, new JID(key, service.getServiceDomain(), null));
                 }
             }
 
             @Override
-            public void mapCleared(@Nonnull NodeID nodeID) {
+            public void mapCleared(@Nonnull NodeID nodeID)
+            {
             }
 
             @Override
-            public void mapEvicted(@Nonnull NodeID nodeID) {
+            public void mapEvicted(@Nonnull NodeID nodeID)
+            {
             }
         }, false, false);
 
@@ -451,15 +465,17 @@ public class LocalMUCRoomManager
 
         // Kick the user from all the rooms that he/she had previously joined.
         try {
-            final Presence kickedPresence = room.kickOccupant(userToBeKicked, null, null, "Nickname clash with other user in the same room.");
+            final List<Presence> kickedPresences = room.kickOccupant(userToBeKicked, room.getSelfRepresentation().getAffiliation(), room.getSelfRepresentation().getRole(), null, null,"Nickname clash with other user in the same room.");
 
-            Log.trace("Kick presence to be sent to room: {}", kickedPresence);
+            for(final Presence kickedPresence : kickedPresences) {
+                Log.trace("Kick presence to be sent to room: {}", kickedPresence);
 
-            // Send the updated presence to the room occupants, but only those on this local node.
-            room.send(kickedPresence, room.getSelfRepresentation());
+                // Send the updated presence to the room occupants, but only those on this local node.
+                room.send(kickedPresence, room.getSelfRepresentation());
+            }
 
             Log.debug("Kicked occupant '{}' out of room '{}'.", userToBeKicked, room.getName());
-        } catch (final NotAllowedException e) {
+        } catch (final ForbiddenException | NotAllowedException e) {
             // Do nothing since we cannot kick owners or admins
             Log.debug("Occupant '{}' not kicked out of room '{}' because of '{}'.", userToBeKicked, room.getName(), e.getMessage());
         }
@@ -497,7 +513,7 @@ public class LocalMUCRoomManager
                 if (occupantsToRemove != null) {
                     Log.trace("These occupants of the room are recognized as living on another cluster node. Removing them from the room: {}", occupantsToRemove.stream().map(OccupantManager.Occupant::getRealJID).map(JID::toString).collect(Collectors.joining( ", " )));
                     for (OccupantManager.Occupant occupantToRemove : occupantsToRemove) {
-                        final MUCRole occupant = room.getOccupantByFullJID(occupantToRemove.getRealJID());
+                        final MUCOccupant occupant = room.getOccupantByFullJID(occupantToRemove.getRealJID());
                         if (occupant == null) {
                             Log.trace("Trying to remove occupant '{}' but no role for that occupant exists in the room. Data inconsistency?", occupantToRemove.getRealJID());
                             continue;
@@ -507,7 +523,7 @@ public class LocalMUCRoomManager
                 }
 
                 // Place room in cluster cache.
-                Log.trace("Re-added local room '{}' to cache, with occupants: {}", roomName, room.getOccupants().stream().map(MUCRole::getUserAddress).map(JID::toString).collect(Collectors.joining( ", " )));
+                Log.trace("Re-added local room '{}' to cache, with occupants: {}", roomName, room.getOccupants().stream().map(MUCOccupant::getUserAddress).map(JID::toString).collect(Collectors.joining( ", " )));
                 ROOM_CACHE.put(roomName, room);
             } finally {
                 lock.unlock();
@@ -558,58 +574,28 @@ public class LocalMUCRoomManager
 
     /**
      * Modifies the statistic in {@link #ROOM_CACHE_STATS} that keeps a count of all non-persisted MUC rooms
-     * (key: {@link #STAT_KEY_ROOMCOUNT_NONPERSISTENT}), based on a rooms that are removed from or added to {@link #ROOM_CACHE}
+     * (key: {@link #STAT_KEY_ROOMCOUNT_NONPERSISTENT}), based on a comparison of a previous count of <em>local</em>
+     * rooms that are non-persistent, and a new count of <em>local</em> rooms that are non-persistent (any delta is
+     * added to the cluster-wide count of non-persistent rooms).
      *
-     * @param oldValue a room that was removed from {@link #ROOM_CACHE}
-     * @param newValue a room that was added to {@link #ROOM_CACHE}
-     */
-    private void updateNonPersistentRoomStat(@Nullable final MUCRoom oldValue, @Nullable final MUCRoom newValue)
-    {
-        int delta = 0;
-        if (oldValue != null && !oldValue.isPersistent()) {
-            delta--;
-        }
-        if (newValue != null && !newValue.isPersistent()) {
-            delta++;
-        }
-        if (delta < 0) {
-            decrementStatistic(STAT_KEY_ROOMCOUNT_NONPERSISTENT);
-        } else if (delta > 0) {
-            incrementStatistic(STAT_KEY_ROOMCOUNT_NONPERSISTENT);
-        }
-    }
-
-    /**
-     * Increments (+1) a number-based value of a statistic as maintained in {@link #ROOM_CACHE_STATS}.
+     * The primary purpose of this method is to update the cluster-wide count of non-persistent rooms, without iterating
+     * over all entries in {@link #ROOM_CACHE}, which is known to be very resource intensive in a cluster.
      *
-     * @param key the key used to store the statistic in the cache.
+     * @see <a href="https://issues.igniterealtime.org/browse/OF-2502">OF-2502</a>
      */
-    private void incrementStatistic(@Nonnull final String key)
+    private void updateNonPersistentRoomStat()
     {
-        final Lock lock = ROOM_CACHE_STATS.getLock(key);
+        final Lock lock = ROOM_CACHE_STATS.getLock(STAT_KEY_ROOMCOUNT_NONPERSISTENT);
         lock.lock();
         try {
-            Long count = ROOM_CACHE_STATS.getOrDefault(key, 0L);
-            count++;
-            ROOM_CACHE_STATS.put(key, count);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    /**
-     * Decrements (-1) a number-based value of a statistic as maintained in {@link #ROOM_CACHE_STATS}.
-     *
-     * @param key the key used to store the statistic in the cache.
-     */
-    private void decrementStatistic(@Nonnull final String key)
-    {
-        final Lock lock = ROOM_CACHE_STATS.getLock(key);
-        lock.lock();
-        try {
-            Long count = ROOM_CACHE_STATS.getOrDefault(key, 0L);
-            count--;
-            ROOM_CACHE_STATS.put(key, count);
+            final long newCount = localRooms.values().stream().filter(mucRoom -> !mucRoom.isPersistent()).count();
+            final long delta = localNonPersistentRoomCount - newCount;
+            if (delta != 0) {
+                Long count = ROOM_CACHE_STATS.getOrDefault(STAT_KEY_ROOMCOUNT_NONPERSISTENT, 0L);
+                count += delta;
+                ROOM_CACHE_STATS.put(STAT_KEY_ROOMCOUNT_NONPERSISTENT, count);
+            }
+            localNonPersistentRoomCount = newCount;
         } finally {
             lock.unlock();
         }

@@ -4,12 +4,14 @@
     <parent>
         <artifactId>parent</artifactId>
         <groupId>org.igniterealtime.openfire</groupId>
-        <version>4.9.2</version>
+        <version>5.2.0-SNAPSHOT</version>
     </parent>
     <artifactId>starter</artifactId>
     <name>Starter for Openfire</name>
     <description>Starts Openfire and also launches the web admin interface in a web browser</description>
     <properties>
+        <!-- Use static build timestamp for reproducible builds -->
+        <project.build.outputTimestamp>1980-02-01T00:00:00Z</project.build.outputTimestamp>
     </properties>
     <build>
         <plugins>
@@ -28,15 +30,6 @@
             </plugin>
         </plugins>
 
-        <resources>
-            <resource>
-                <directory>../distribution/src/installer/images</directory>
-                <includes>
-                    <include>*.gif</include>
-                    <include>*.png</include>
-                </includes>
-            </resource>
-        </resources>
     </build>
 
     <dependencies>
@@ -56,16 +49,16 @@
         <dependency>
             <groupId>com.install4j</groupId>
             <artifactId>install4j-runtime</artifactId>
-            <version>10.0.3</version>
+            <version>12.0.2</version>
             <scope>provided</scope>
         </dependency>
-    </dependencies>
 
-    <repositories>
-        <repository>
-            <id>ej-technologies</id>
-            <url>https://maven.ej-technologies.com/repository/</url>
-        </repository>
-    </repositories>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.1.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 
 </project>

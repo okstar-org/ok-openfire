@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2023-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -162,14 +162,7 @@ public class WebSocketClientStanzaHandler extends ClientStanzaHandler
 
     private void sendStreamFeatures() {
         final Element features = DocumentHelper.createElement(QName.get("features", "stream", "http://etherx.jabber.org/streams"));
-        if (saslStatus != SASLAuthentication.Status.authenticated) {
-            // Include available SASL Mechanisms
-            final Element saslMechanisms = SASLAuthentication.getSASLMechanisms(session);
-            if (saslMechanisms != null) {
-                features.add(saslMechanisms);
-            }
-        }
-        // Include Stream features
+        // Include Stream features (including SASL mechanisms when not yet authenticated)
         final List<Element> specificFeatures = session.getAvailableStreamFeatures();
         if (specificFeatures != null) {
             for (final Element feature : specificFeatures) {
@@ -202,6 +195,15 @@ public class WebSocketClientStanzaHandler extends ClientStanzaHandler
     protected void saslSuccessful() {
         // When using websockets, send the stream header in a separate websocket frame!
         connection.deliverRawText(withoutDeclaration(getStreamHeader()));
+        sendStreamFeatures();
+    }
+
+    /**
+     * SASL2 (XEP-0388) does not restart the stream, so unlike saslSuccessful() we send NO <open/> frame here; only the
+     * updated features, as their own RFC 7395 frame.
+     */
+    @Override
+    protected void sasl2Successful() {
         sendStreamFeatures();
     }
 

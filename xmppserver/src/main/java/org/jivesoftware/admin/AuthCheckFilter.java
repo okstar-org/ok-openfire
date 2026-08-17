@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,39 +16,30 @@
 
 package org.jivesoftware.admin;
 
-import java.io.IOException;
-import java.net.URLDecoder;
-import java.net.URLEncoder;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Set;
-import java.util.StringTokenizer;
-import java.util.concurrent.ConcurrentHashMap;
-
-import javax.annotation.Nonnull;
-import javax.servlet.Filter;
-import javax.servlet.FilterChain;
-import javax.servlet.FilterConfig;
-import javax.servlet.ServletContext;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-
-import com.github.jgonian.ipmath.Ipv4;
-import com.github.jgonian.ipmath.Ipv4Range;
-import com.github.jgonian.ipmath.Ipv6;
-import com.github.jgonian.ipmath.Ipv6Range;
 import org.jivesoftware.openfire.admin.AdminManager;
 import org.jivesoftware.openfire.auth.AuthFactory;
 import org.jivesoftware.openfire.auth.AuthToken;
 import org.jivesoftware.openfire.user.User;
+import org.jivesoftware.util.IpUtils;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.SystemProperty;
 import org.jivesoftware.util.WebManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+import javax.servlet.*;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Set;
+import java.util.StringTokenizer;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A simple filter which checks for the auth token in the user's session. If it's not there
@@ -102,13 +93,13 @@ public class AuthCheckFilter implements Filter {
 
     private static ServletRequestAuthenticator servletRequestAuthenticator;
 
-    private static void initAuthenticator(final Class clazz) {
+    private static void initAuthenticator(final Class<? extends ServletRequestAuthenticator> clazz) {
         // Check if we need to reset the auth provider class
         if(clazz == null && servletRequestAuthenticator != null) {
             servletRequestAuthenticator = null;
         } else if (clazz != null && (servletRequestAuthenticator == null || !clazz.equals(servletRequestAuthenticator.getClass()))) {
             try {
-                servletRequestAuthenticator = (ServletRequestAuthenticator)clazz.newInstance();
+                servletRequestAuthenticator = clazz.newInstance();
             }
             catch (final Exception e) {
                 Log.error("Error loading ServletRequestAuthenticator {}", clazz.getName(), e);
@@ -120,7 +111,7 @@ public class AuthCheckFilter implements Filter {
     private static final Logger Log = LoggerFactory.getLogger(AuthCheckFilter.class);
     private static AuthCheckFilter instance;
 
-    private static Set<String> excludes = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private static Set<String> excludes = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private final AdminManager adminManager;
     private final LoginLimitManager loginLimitManager;
@@ -208,7 +199,7 @@ public class AuthCheckFilter implements Filter {
 
         String decodedUrl = null;
         try {
-            decodedUrl = URLDecoder.decode(url, "UTF-8");
+            decodedUrl = URLDecoder.decode(url, StandardCharsets.UTF_8);
         } catch (Exception e) {
             return false;
         }
@@ -327,8 +318,11 @@ public class AuthCheckFilter implements Filter {
 
     @Override
     public void destroy() {
-        // reset excludes to an empty set to prevent state carry over
-        excludes = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        // Intentionally left empty. The static 'excludes' set is shared across filter instances
+        // so that plugin-registered excludes survive admin-console restarts. Plugins are
+        // responsible for calling removeExclude() in their destroyPlugin() lifecycle.
+        // Web.xml excludes are re-added by init() on each restart (Set semantics prevent duplicates).
+        // Setup-mode excludes are cleaned up explicitly in AdminConsolePlugin.startup().
     }
 
     private String getRedirectURL(HttpServletRequest request, String loginPage,
@@ -346,7 +340,7 @@ public class AuthCheckFilter implements Filter {
             Log.error(e.getMessage(), e);
         }
         try {
-            return loginPage + "?url=" + URLEncoder.encode(buf.toString(), "ISO-8859-1")
+            return loginPage + "?url=" + URLEncoder.encode(buf.toString(), StandardCharsets.ISO_8859_1)
                     + (optionalParams != null ? "&"+optionalParams : "");
         }
         catch (Exception e) {
@@ -366,8 +360,8 @@ public class AuthCheckFilter implements Filter {
     public static boolean passesBlocklist(@Nonnull final ServletRequest req) {
         // In a proxied setup, org.jivesoftware.openfire.container.AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED should be
         // set to 'true' to have the below report the true 'peer' address.
-        final String remoteAddr = removeBracketsFromIpv6Address(req.getRemoteAddr());
-        final boolean result = !isOnList(IP_ACCESS_BLOCKLIST.getValue(), remoteAddr);
+        final String remoteAddr = IpUtils.removeBracketsFromIpv6Address(req.getRemoteAddr());
+        final boolean result = !IpUtils.isAddressInAnyOf(remoteAddr, IP_ACCESS_BLOCKLIST.getValue());
         Log.debug("IP address '{}' {} pass the block list.", remoteAddr, result ? "does" : "does not");
         return result;
     }
@@ -383,110 +377,14 @@ public class AuthCheckFilter implements Filter {
     public static boolean passesAllowList(@Nonnull final ServletRequest req) {
         // In a proxied setup, org.jivesoftware.openfire.container.AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED should be
         // set to 'true' to have the below report the true 'peer' address.
-        final String remoteAddr = removeBracketsFromIpv6Address(req.getRemoteAddr());
+        final String remoteAddr = IpUtils.removeBracketsFromIpv6Address(req.getRemoteAddr());
         final Set<String> allowList = IP_ACCESS_ALLOWLIST.getValue();
-        final boolean result = allowList.isEmpty() || isOnList(allowList, remoteAddr);
+        final boolean result = allowList.isEmpty() || IpUtils.isAddressInAnyOf(remoteAddr, allowList);
         Log.debug("IP address '{}' {} pass the allow list.", remoteAddr, result ? "does" : "does not");
         return result;
-    }
-
-    /**
-     * Checks if a particular IP address is on a list of addresses.
-     *
-     * The IP address is expected to be an IPv4 or IPv6 address. The list can contain IPv4 and IPv6 addresses, but also
-     * IPv4 and IP46 address ranges. Ranges can be expressed as dash separated strings (eg: "192.168.0.0-192.168.255.255")
-     * or in CIDR notation (eg: "192.168.0.0/16").
-     *
-     * @param list The list of addresses
-     * @param ipAddress the address to check
-     * @return <tt>true</tt> if the address is detected in the list, otherwise <tt>false</tt>.
-     */
-    public static boolean isOnList(@Nonnull final Set<String> list, @Nonnull final String ipAddress) {
-        Ipv4 remoteIpv4;
-        try {
-            remoteIpv4 = Ipv4.of(ipAddress);
-        } catch (IllegalArgumentException e) {
-            Log.trace("Address '{}' is not an IPv4 address.", ipAddress);
-            remoteIpv4 = null;
-        }
-        Ipv6 remoteIpv6;
-        try {
-            remoteIpv6 = Ipv6.of(ipAddress);
-        } catch (IllegalArgumentException e) {
-            Log.trace("Address '{}' is not an IPv6 address.", ipAddress);
-            remoteIpv6 = null;
-        }
-
-        if (remoteIpv4 == null && remoteIpv6 == null) {
-            Log.warn("Unable to parse '{}' as an IPv4 or IPv6 address!", ipAddress);
-        }
-
-        for (final String item : list) {
-            // Check if the remote address is an exact match on the list.
-            if (item.equals(ipAddress)) {
-                return true;
-            }
-
-            // Check if the remote address is a match for an address range on the list.
-            if (remoteIpv4 != null) {
-                Ipv4Range range;
-                try {
-                    range = Ipv4Range.parse(item);
-                } catch (IllegalArgumentException e) {
-                    Log.trace("List entry '{}' is not an IPv4 range.", item);
-                    range = null;
-                }
-                if (range != null && range.contains(remoteIpv4)) {
-                    return true;
-                }
-            }
-            if (remoteIpv6 != null) {
-                Ipv6Range range;
-                try {
-                    range = Ipv6Range.parse(item);
-                } catch (IllegalArgumentException e) {
-                    Log.trace("List entry '{}' is not an IPv6 range.", item);
-                    range = null;
-                }
-                if (range != null && range.contains(remoteIpv6)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * When the provided input is an IPv6 literal that is enclosed in brackets (the [] style as expressed in
-     * https://tools.ietf.org/html/rfc2732 and https://tools.ietf.org/html/rfc6874), this method returns the value
-     * stripped from those brackets (the IPv6 address, instead of the literal). In all other cases, the input value is
-     * returned.
-     *
-     * @param address The value from which to strip brackets.
-     * @return the input value, stripped from brackets if applicable.
-     */
-    @Nonnull
-    public static String removeBracketsFromIpv6Address(@Nonnull final String address)
-    {
-        final String result;
-        if (address.startsWith("[") && address.endsWith("]")) {
-            result = address.substring(1, address.length()-1);
-            try {
-                Ipv6.parse(result);
-                // The remainder is a valid IPv6 address. Return the original value.
-                return result;
-            } catch (IllegalArgumentException e) {
-                // The remainder isn't a valid IPv6 address. Return the original value.
-                return address;
-            }
-        }
-        // Not a bracket-enclosed string. Return the original input.
-        return address;
     }
 
     public static void loadSetupExcludes() {
         Arrays.stream(JiveGlobals.setupExcludePaths).forEach(AuthCheckFilter::addExclude);
     }
-
-
 }

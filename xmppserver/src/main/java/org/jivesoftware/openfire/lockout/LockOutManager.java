@@ -87,7 +87,7 @@ public class LockOutManager {
     private static LockOutProvider provider;
 
     /**
-     * Constructs a LockOutManager, setting up it's cache, propery listener, and setting up the provider.
+     * Constructs a LockOutManager, setting up it's cache, property listener, and setting up the provider.
      */
     private LockOutManager() {
         // Initialize the lockout cache.
@@ -102,10 +102,10 @@ public class LockOutManager {
      * Initializes the server's lock out provider, based on configuration and defaults to
      * DefaultLockOutProvider if the specified provider is not valid or not specified.
      */
-    private static void initProvider(final Class clazz) {
+    private static void initProvider(final Class<? extends LockOutProvider> clazz) {
         if (provider == null || !clazz.equals(provider.getClass())) {
             try {
-                provider = (LockOutProvider) clazz.newInstance();
+                provider = clazz.newInstance();
             }
             catch (Exception e) {
                 Log.error("Error loading lockout provider: " + clazz.getName(), e);

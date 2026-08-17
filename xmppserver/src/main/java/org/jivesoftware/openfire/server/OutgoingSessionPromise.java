@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,11 @@ package org.jivesoftware.openfire.server;
 
 import com.google.common.collect.Interner;
 import com.google.common.collect.Interners;
-import org.jivesoftware.openfire.RoutableChannelHandler;
 import org.jivesoftware.openfire.RoutingTable;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.cluster.NodeID;
 import org.jivesoftware.openfire.session.ConnectionSettings;
+import org.jivesoftware.openfire.session.DomainAuthResult;
 import org.jivesoftware.openfire.session.DomainPair;
 import org.jivesoftware.openfire.session.LocalOutgoingServerSession;
 import org.jivesoftware.openfire.session.OutgoingServerSession;
@@ -38,6 +38,7 @@ import org.xmpp.packet.*;
 
 import javax.annotation.Nonnull;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
@@ -62,7 +63,7 @@ public class OutgoingSessionPromise {
     public static final SystemProperty<Integer> QUEUE_MAX_THREADS = SystemProperty.Builder.ofType(Integer.class)
         .setKey(ConnectionSettings.Server.QUEUE_MAX_THREADS)
         .setDynamic(false)
-        .setDefaultValue(20)
+        .setDefaultValue(100)
         .setMinValue(0) // RejectedExecutionHandler is CallerRunsPolicy, meaning that the calling thread would execute the task.
         .build();
 
@@ -88,7 +89,20 @@ public class OutgoingSessionPromise {
         .setMinValue(Duration.ZERO)
         .build();
 
+    public static final SystemProperty<Duration> CLOSE_WAIT_TIMEOUT = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("xmpp.server.outgoing.close-wait-timeout")
+        .setDynamic(true)
+        .setDefaultValue(Duration.ofSeconds(5))
+        .setChronoUnit(ChronoUnit.MILLIS)
+        .setMinValue(Duration.ZERO)
+        .build();
+
     private static final OutgoingSessionPromise instance = new OutgoingSessionPromise();
+
+    /**
+     * Name of the clustered cache that stores the latest failed outgoing S2S attempt per remote domain.
+     */
+    public static final String FAILED_S2S_ATTEMPTS_CACHE_NAME = "Routing Failed Servers Cache";
 
     private final Interner<DomainPair> interner = Interners.newWeakInterner();
 
@@ -106,6 +120,13 @@ public class OutgoingSessionPromise {
      */
     private Cache<DomainPair, NodeID> serversCache;
 
+    /**
+     * Cache that holds the most recent failed outgoing S2S connection attempt per remote domain.
+     *
+     * Key: remote server domain, Value: diagnostics payload for the latest failed attempt.
+     */
+    private Cache<String, FailedOutgoingServerSessionAttempt> failedServerAttemptsCache;
+
     private RoutingTable routingTable;
 
     private OutgoingSessionPromise() {
@@ -115,6 +136,7 @@ public class OutgoingSessionPromise {
 
     private void init() {
         serversCache = CacheFactory.createCache(RoutingTableImpl.S2S_CACHE_NAME);
+        failedServerAttemptsCache = CacheFactory.createCache(FAILED_S2S_ATTEMPTS_CACHE_NAME);
         routingTable = XMPPServer.getInstance().getRoutingTable();
 
         // Create a pool of threads that will process queued packets.
@@ -222,6 +244,53 @@ public class OutgoingSessionPromise {
         return processor != null && !processor.isDone();
     }
 
+    /**
+     * Returns domains for which the latest outgoing S2S connection establishment attempt failed.
+     *
+     * @return a snapshot of remote domains for which a failure is recorded.
+     */
+    public Collection<String> getFailedServers() {
+        return new HashSet<>(failedServerAttemptsCache.keySet());
+    }
+
+    /**
+     * Returns diagnostics for the latest failed outgoing S2S connection establishment attempt to a remote domain.
+     *
+     * @param remoteDomain The remote domain.
+     * @return diagnostics payload, if available.
+     */
+    public Optional<FailedOutgoingServerSessionAttempt> getFailedServerAttempt(@Nonnull final String remoteDomain) {
+        return Optional.ofNullable(failedServerAttemptsCache.get(remoteDomain));
+    }
+
+    /**
+     * Stores diagnostics for a failed connection establishment attempt.
+     *
+     * This overwrites any previous entry for the same remote domain, intentionally preserving only
+     * the latest known failure.
+     *
+     * @param domainPair    the local/remote domain pair for the attempted connection.
+     * @param cause         the failure cause.
+     * @param diagnosticLog ordered log lines collected during the authentication attempt.
+     */
+    private void recordFailedAttempt(@Nonnull final DomainPair domainPair, @Nonnull final Throwable cause, @Nonnull final List<String> diagnosticLog)
+    {
+        failedServerAttemptsCache.put(domainPair.getRemote(), FailedOutgoingServerSessionAttempt.from(domainPair.getLocal(), domainPair.getRemote(), cause, diagnosticLog));
+    }
+
+    /**
+     * Removes the latest-failure diagnostics entry for a remote domain.
+     *
+     * This is invoked after a successful connection establishment to ensure stale failure data does
+     * not continue to be presented for an active peer.
+     *
+     * @param domainPair the local/remote domain pair for which failure state should be cleared.
+     */
+    private void clearFailedAttempt(@Nonnull final DomainPair domainPair)
+    {
+        failedServerAttemptsCache.remove(domainPair.getRemote());
+    }
+
     private class PacketsProcessor implements Runnable
     {
         private final Logger Log = LoggerFactory.getLogger( PacketsProcessor.class );
@@ -232,6 +301,17 @@ public class OutgoingSessionPromise {
         @Nonnull
         private final Queue<Packet> packetQueue = new ArrayBlockingQueue<>( QUEUE_SIZE.getValue() );
 
+        private volatile boolean done = false;
+
+        /**
+         * Diagnostic log collected during the most recent {@link LocalOutgoingServerSession#authenticateDomain}
+         * invocation. Populated by {@link #establishConnection()} and consumed by {@link #run()} when recording
+         * a failed attempt. Defaults to an empty list so that failures that occur before {@code authenticateDomain}
+         * is even reached (e.g. interrupted wait for prior session teardown) still produce a valid object.
+         */
+        @Nonnull
+        private List<String> lastAuthDiagnosticLog = Collections.emptyList();
+
         public PacketsProcessor(@Nonnull final DomainPair domainPair) {
             this.domainPair = domainPair;
         }
@@ -239,11 +319,13 @@ public class OutgoingSessionPromise {
         @Override
         public void run() {
             Log.debug("Start for {}", domainPair);
-            RoutableChannelHandler channel;
+            OutgoingServerSession channel;
             try {
                 channel = establishConnection();
+                clearFailedAttempt(domainPair);
             } catch (Exception e) {
-                Log.warn("An exception occurred while trying to establish a connection for {}", domainPair, e);
+                Log.debug("An exception occurred while trying to establish a connection for {}", domainPair, e);
+                recordFailedAttempt(domainPair, e, lastAuthDiagnosticLog);
                 channel = null;
             }
 
@@ -273,34 +355,131 @@ public class OutgoingSessionPromise {
 
                 // Remove the processor to ensure that it cannot accept new stanzas to be queued.
                 packetsProcessors.remove(domainPair);
+                done = true;
             }
             Log.trace("Finished processing {}", domainPair);
         }
 
-        private RoutableChannelHandler establishConnection() throws Exception {
+        private OutgoingServerSession establishConnection() throws Exception {
             Log.debug("Start establishing a connection for {}", domainPair);
-            // Create a connection to the remote server from the domain where the packet has been sent
-            boolean created;
+
+            // Wait for any previous session for this domain pair to fully complete its teardown before attempting to
+            // establish a new one. isClosed() returning true only signals the intent to close. Close listeners
+            // (including removal from the routing table) may still be in progress. Proceeding before they finish
+            // risks the new session colliding with stale state in the routing table.
+            final OutgoingServerSession existingRoute = routingTable.getServerRoute(domainPair);
+            waitForRouteTeardownIfNeeded(existingRoute);
+
             // Make sure that only one cluster node is creating the outgoing connection
             final Lock lock = serversCache.getLock(domainPair);
             lock.lock();
             try {
-                created = LocalOutgoingServerSession.authenticateDomain(domainPair);
+                // OF-3283: If another cluster node already has an outgoing session for this domain pair, re-use it to deliver the queued stanzas.
+                final OutgoingServerSession existingRouteWhileLocked = routingTable.getServerRoute(domainPair);
+                if (existingRouteWhileLocked != null) {
+                    if (existingRouteWhileLocked.isClosed()) {
+                        throw new Exception("A route for " + domainPair + " became available while waiting for the cluster lock, but that route is already closed or closing. This is an edge case that is expected to be very rare, which the current implementation does not handle.");
+                    }
+
+                    Log.debug("Re-using outgoing route for {} that became available while waiting for the cluster lock.", domainPair);
+                    return existingRouteWhileLocked;
+                }
+
+                final DomainAuthResult authResult = LocalOutgoingServerSession.authenticateDomain(domainPair);
+                lastAuthDiagnosticLog = authResult.getDiagnosticLog();
+                if (authResult.isSuccess()) {
+                    final OutgoingServerSession serverRoute = routingTable.getServerRoute(domainPair);
+                    if (serverRoute == null) {
+                        throw new Exception("Route created for " + domainPair + " but not found in routing table! This is likely a concurrency issue within Openfire.");
+                    }
+                    return serverRoute;
+                } else {
+                    throw new Exception("Failed to create connection to remote server: " + domainPair);
+                }
             } finally {
                 lock.unlock();
             }
-            if (created) {
-                final OutgoingServerSession serverRoute = routingTable.getServerRoute(domainPair);
-                if (serverRoute == null || !(serverRoute instanceof LocalOutgoingServerSession)) {
-                    throw new Exception("Route created but not found!!!");
-                } else {
-                    return serverRoute;
-                }
+        }
+
+        /**
+         * Waits for teardown of a closing outgoing route to complete.
+         *
+         * For local routes, this uses the underlying connection's close future, which completes only after all close
+         * processing (including route-removal listeners) has finished.
+         *
+         * For remote routes, no equivalent close future is available. In that case, this method polls the routing
+         * table until the closed route disappears or is replaced by a route that is no longer closing.
+         *
+         * If teardown does not complete within {@link #CLOSE_WAIT_TIMEOUT}, this method logs a warning and returns.
+         *
+         * @param route The route that may need to finish teardown.
+         */
+        private void waitForRouteTeardownIfNeeded(final OutgoingServerSession route)
+        {
+            if (route == null) {
+                return;
             }
-            else {
-                throw new Exception("Failed to create connection to remote server");
+
+            try {
+                if (!route.isClosed()) {
+                    return;
+                }
+
+                if (route instanceof LocalOutgoingServerSession localRoute) {
+                    // A local route exposes its connection close future, which signals that all teardown work is done.
+                    Log.debug("Waiting for previous outgoing session for {} to fully close.", domainPair);
+                    localRoute.getConnection().getCloseFuture().toCompletableFuture().get(CLOSE_WAIT_TIMEOUT.getValue().toMillis(), TimeUnit.MILLISECONDS);
+                    return;
+                }
+
+                // Remote routes do not expose a close future. Poll until the closing route disappears or is replaced.
+                Log.debug("Waiting for previous outgoing session (on another cluster node) for {} to fully close.", domainPair);
+                final Instant deadline = Instant.now().plus(CLOSE_WAIT_TIMEOUT.getValue());
+                final Duration timeBetweenCloseChecks = Duration.ofSeconds(1);
+                Instant nextIsClosedCheck = Instant.now().plus(timeBetweenCloseChecks);
+
+                while (Instant.now().isBefore(deadline))
+                {
+                    final OutgoingServerSession currentRoute = routingTable.getServerRoute(domainPair);
+                    if (currentRoute == null) {
+                        // Stop waiting when the original closing route has disappeared.
+                        Log.debug("Previous outgoing session for {} has fully closed.", domainPair);
+                        return;
+                    }
+
+                    // isClosed() on a remote route is an expensive cluster call; only perform it occasionally.
+                    if (Instant.now().isAfter(nextIsClosedCheck)) {
+                        if (!currentRoute.isClosed()) {
+                            // A new, non-closing route has appeared; no need to wait further.
+                            Log.debug("Previous outgoing session for {} has been replaced with a different session that's not in process of being closed.", domainPair);
+                            return;
+                        }
+                        nextIsClosedCheck = Instant.now().plus(timeBetweenCloseChecks);
+                    }
+
+                    TimeUnit.MILLISECONDS.sleep(50);
+                }
+
+                // One last check that also validates if the route has been replaced by a new route that is _not_ in process of being closed.
+                final OutgoingServerSession currentRoute = routingTable.getServerRoute(domainPair);
+                if (currentRoute == null || !currentRoute.isClosed()) {
+                    Log.debug("Previous outgoing session for {} has fully closed, or has been replaced.", domainPair);
+                    return;
+                }
+
+                Log.warn("Timed out waiting for previous outgoing session for {} to fully close.", domainPair);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Log.warn("Interrupted while waiting for previous outgoing session for {} to fully close.", domainPair, e);
+            } catch (TimeoutException e) {
+                Log.warn("Timed out waiting for previous outgoing session for {} to fully close.", domainPair, e);
+            } catch (ExecutionException e) {
+                Log.warn("Exception while waiting for previous outgoing session for {} to fully close.", domainPair, e);
+            } catch (Exception e) {
+                Log.warn("Unexpected exception while waiting for previous outgoing session for {} to fully close.", domainPair, e);
             }
         }
+
 
         /**
          * Processes stanzas that could not be delivered to a remote domain, by generating error responses where
@@ -339,7 +518,7 @@ public class OutgoingSessionPromise {
                     // workaround for OF-23. "undo" the 'setFrom' to a bare JID 
                     // by sending the error to all available resources.
                     final List<JID> routes = new ArrayList<>();
-                    if (from.getResource() == null || from.getResource().trim().length() == 0) {
+                    if (from.getResource() == null || from.getResource().trim().isEmpty()) {
                         routes.addAll(routingTable.getRoutes(from, null));
                     } else {
                         routes.add(from);
@@ -414,7 +593,7 @@ public class OutgoingSessionPromise {
         }
 
         public boolean isDone() {
-            return packetQueue.isEmpty();
+            return done;
         }
     }
 }

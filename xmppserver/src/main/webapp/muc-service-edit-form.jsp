@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@
 %>
 <%@ page import="java.net.URLEncoder" %>
 <%@ page import="org.xmpp.packet.JID" %>
+<%@ page import="java.nio.charset.StandardCharsets" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
 <%@ taglib prefix="admin" uri="admin" %>
@@ -92,7 +93,7 @@
             mucname = mucname.toLowerCase();
 
             // do validation
-            if (mucname.indexOf('.') >= 0 || mucname.length() < 1) {
+            if (mucname.indexOf('.') >= 0 || mucname.isEmpty()) {
                 errors.put("mucname", "mucname");
             } else {
                 try {
@@ -120,23 +121,25 @@
             }
 
             // Update settings only after the service has been created.
-            if (ParamUtils.getParameter(request, "muccleanupdays") != null || muckeep) { // Only explicitly store if set (otherwise use default).
-                MUCPersistenceManager.setProperty(mucname, "unload.empty_days", Integer.toString(muccleanupdays));
-            }
+            if (errors.isEmpty()) {
+                if (ParamUtils.getParameter(request, "muccleanupdays") != null || muckeep) { // Only explicitly store if set (otherwise use default).
+                    MUCPersistenceManager.setProperty(mucname, "unload.empty_days", Integer.toString(muccleanupdays));
+                }
 
-            if (ParamUtils.getParameter(request, "mucpreloaddays") != null || !mucpreload) { // Only explicitly store if set (otherwise use default).
-                MUCPersistenceManager.setProperty(mucname, "preload.days", Integer.toString(mucpreloaddays));
-            }
+                if (ParamUtils.getParameter(request, "mucpreloaddays") != null || !mucpreload) { // Only explicitly store if set (otherwise use default).
+                    MUCPersistenceManager.setProperty(mucname, "preload.days", Integer.toString(mucpreloaddays));
+                }
 
-            // Log the event
-            if (!create) {
-                webManager.logEvent("updated MUC service configuration for "+mucname, "name = "+mucname+"\ndescription = "+mucdesc+"\ncleanup = "+muccleanupdays+"\npreload = "+mucpreloaddays);
-                response.sendRedirect("muc-service-edit-form.jsp?success=true&mucname="+mucname);
-                return;
-            } else {
-                webManager.logEvent("created MUC service "+mucname, "name = "+mucname+"\ndescription = "+mucdesc+"\ncleanup = "+muccleanupdays+"\npreload = "+mucpreloaddays);
-                response.sendRedirect("muc-service-edit-form.jsp?success=true&mucname="+mucname);
-                return;
+                // Log the event
+                if (!create) {
+                    webManager.logEvent("updated MUC service configuration for " + mucname, "name = " + mucname + "\ndescription = " + mucdesc + "\ncleanup = " + muccleanupdays + "\npreload = " + mucpreloaddays);
+                    response.sendRedirect("muc-service-edit-form.jsp?success=true&mucname=" + mucname);
+                    return;
+                } else {
+                    webManager.logEvent("created MUC service " + mucname, "name = " + mucname + "\ndescription = " + mucdesc + "\ncleanup = " + muccleanupdays + "\npreload = " + mucpreloaddays);
+                    response.sendRedirect("muc-service-edit-form.jsp?success=true&mucname=" + mucname);
+                    return;
+                }
             }
         }
     }    
@@ -166,7 +169,7 @@
 <meta name="pageID" content="muc-service-create"/>
 <% } else { %>
 <meta name="subPageID" content="muc-service-edit-form"/>
-<meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, "UTF-8") %>"/>
+<meta name="extraParams" content="<%= "mucname="+URLEncoder.encode(mucname, StandardCharsets.UTF_8) %>"/>
 <% } %>
 <meta name="helpPage" content="edit_group_chat_service_properties.html"/>    
 <script>
@@ -234,7 +237,7 @@
                 </td>
                 <td>
                     <% if (create) { %>
-                    <input type="text" size="30" maxlength="150" id="mucname" name="mucname" value="<%= (mucname != null ? StringUtils.escapeForXML(mucname) : "") %>">
+                    <input type="text" size="30" maxlength="150" id="mucname" name="mucname" value="<%= StringUtils.escapeForXML(mucname) %>">
 
                     <%  if (errors.get("mucname") != null) { %>
 
@@ -253,7 +256,7 @@
                    <label for="mucdesc"><fmt:message key="groupchat.service.properties.label_service_description" /></label>
                 </td>
                 <td>
-                    <input type="text" size="30" maxlength="150" id="mucdesc" name="mucdesc" value="<%= (mucdesc != null ? StringUtils.escapeForXML(mucdesc) : "") %>">
+                    <input type="text" size="30" maxlength="150" id="mucdesc" name="mucdesc" value="<%= StringUtils.escapeForXML(mucdesc) %>">
                 </td>
             </tr>
         </table>

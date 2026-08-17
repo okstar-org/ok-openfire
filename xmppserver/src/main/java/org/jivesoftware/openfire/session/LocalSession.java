@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2009 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2009 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,11 +20,11 @@ import org.dom4j.Element;
 import org.jivesoftware.openfire.Connection;
 import org.jivesoftware.openfire.SessionManager;
 import org.jivesoftware.openfire.StreamID;
-import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
 import org.jivesoftware.openfire.interceptor.InterceptorManager;
 import org.jivesoftware.openfire.interceptor.PacketRejectedException;
 import org.jivesoftware.openfire.streammanagement.StreamManager;
+import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.LocaleUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +111,11 @@ public abstract class LocalSession implements Session {
     private final Locale language;
 
     /**
+     * Indicates if peer has sent &lt;/stream:stream>
+     */
+    private boolean hasReceivedEndOfStream;
+
+    /**
      * Creates a session with an underlying connection and permission protection.
      *
      * @param serverName domain of the XMPP server where the new session belongs.
@@ -133,12 +138,7 @@ public abstract class LocalSession implements Session {
 
     }
 
-    /**
-     * Returns true if the session is detached (that is, if the underlying connection
-     * has been closed while the session instance itself has not been closed).
-     *
-     * @return true if session detached
-     */
+    @Override
     public boolean isDetached() {
         return this.sessionManager.isDetached(this);
     }
@@ -399,7 +399,7 @@ public abstract class LocalSession implements Session {
     @Override
     public void process(Packet packet) {
         // Check that the requested packet can be processed
-        if (canProcess(packet)) {
+        if (canDeliver(packet)) {
             // Perform the actual processing of the packet. This usually implies sending
             // the packet to the entity
             try {
@@ -411,48 +411,29 @@ public abstract class LocalSession implements Session {
             }
             catch (PacketRejectedException e) {
                 // An interceptor rejected the packet so do nothing
+                Log.trace("Packet rejected by interceptor: {}", packet, e);
             }
             catch (Exception e) {
                 Log.error(LocaleUtils.getLocalizedString("admin.error"), e);
             }
         } else {
-            // http://xmpp.org/extensions/xep-0016.html#protocol-error
-            if (packet instanceof Message) {
-                // For message stanzas, the server SHOULD return an error, which SHOULD be <service-unavailable/>.
-                if (((Message)packet).getType() == Message.Type.error){
-                    Log.debug("Avoid generating an error in response to a stanza that itself is an error (to avoid the chance of entering an endless back-and-forth of exchanging errors). Suppress sending an {} error in response to: {}", PacketError.Condition.service_unavailable, packet);
-                    return;
-                }
-                Message message = (Message) packet;
-                Message result = message.createCopy();
-                result.setTo(message.getFrom());
-                result.setFrom(message.getTo());
-                result.setError(PacketError.Condition.service_unavailable);
-                Log.trace("Responding with 'service-unavailable' as message cannot be processed to: {}", packet);
-                XMPPServer.getInstance().getPacketRouter().route(result);
-            } else if (packet instanceof IQ) {
-                // For IQ stanzas of type "get" or "set", the server MUST return an error, which SHOULD be <service-unavailable/>.
-                // IQ stanzas of other types MUST be silently dropped by the server.
-                IQ iq = (IQ) packet;
-                if (iq.getType() == IQ.Type.get || iq.getType() == IQ.Type.set) {
-                    Log.trace("Responding with 'service-unavailable' as IQ request cannot be processed to: {}", packet);
-                    IQ result = IQ.createResultIQ(iq);
-                    result.setError(PacketError.Condition.service_unavailable);
-                    XMPPServer.getInstance().getPacketRouter().route(result);
-                }
-            }
+            Log.debug("Unable to deliver stanza: {}", packet);
         }
     }
 
     /**
-     * Returns true if the specified packet can be delivered to the entity. Subclasses will use different
-     * criterias to determine of processing is allowed or not. For instance, client sessions will use
-     * privacy lists while outgoing server sessions will always allow this action.
+     * Returns true if the specified stanza can be delivered to the entity.
      *
-     * @param packet the packet to analyze if it must be blocked.
-     * @return true if the specified packet must be blocked.
+     * Subclasses will use different criteria to determine of processing is allowed or not. For instance, client
+     * sessions will use privacy lists while component sessions will always allow this action.
+     *
+     * When a stanza cannot be delivered, an implementation must take responsibility for error handling. If, for
+     * example, an error stanza is to be sent back to the sender, this is to be performed by the implementation.
+     *
+     * @param stanza the stanza to analyze if it must be blocked.
+     * @return false if the specified stanza must be blocked.
      */
-    abstract boolean canProcess(Packet packet);
+    abstract boolean canDeliver(@Nonnull final Packet stanza);
 
     abstract void deliver(Packet packet) throws UnauthorizedException;
 
@@ -502,11 +483,16 @@ public abstract class LocalSession implements Session {
                 .orElse(new Certificate[0]);
     }
 
+    // TODO: Remove this override. The override (and the boolean property) serves as a emergency fallback for the change in OF-3031 and _should not_ be needed. It should be desirable to use #getStatus() only.
     @Override
     public boolean isClosed() {
-        return Optional.ofNullable(conn)
+        if (JiveGlobals.getBooleanProperty("xmpp.session.isclose.connectionbased", false)) {
+            return Optional.ofNullable(conn)
                 .map(Connection::isClosed)
                 .orElse(Boolean.TRUE);
+        } else {
+            return getStatus() == Status.CLOSED;
+        }
     }
 
     @Override
@@ -516,6 +502,24 @@ public abstract class LocalSession implements Session {
             throw new UnknownHostException("Detached session");
         }
         return connection.getHostAddress();
+    }
+
+    @Override
+    public int getRemotePort() {
+        Connection connection = conn;
+        if (connection == null) {
+            return 0;
+        }
+        return connection.getRemotePort();
+    }
+
+    @Override
+    public int getLocalPort() {
+        Connection connection = conn;
+        if (connection == null) {
+            return 0;
+        }
+        return connection.getLocalPort();
     }
 
     @Override
@@ -543,7 +547,7 @@ public abstract class LocalSession implements Session {
     /**
      * Returns true if the other peer of this session presented a self-signed certificate. When
      * using self-signed certificate for server-2-server sessions then SASL EXTERNAL will not be
-     * used and instead server-dialback will be preferred for vcerifying the identify of the remote
+     * used and instead server-dialback will be preferred for verifying the identify of the remote
      * server.
      *
      * @return true if the other peer of this session presented a self-signed certificate.
@@ -594,4 +598,41 @@ public abstract class LocalSession implements Session {
         softwareVersionData.put(key, value);
     }
 
+    /**
+     * Mark this session in the associated stream manager as non-resumable.
+     *
+     * If a session was not resumable before invoking this method, or if stream management wasn't in effect at all, an
+     * invocation of this method has no effect.
+     */
+    @Override
+    public void markNonResumable()
+    {
+        if (streamManager != null) {
+            streamManager.formalClose();
+        }
+    }
+
+    /**
+     * Sets a boolean value indicating that the client associated to this session has sent an 'end of stream' event to
+     * the server (typically, this is a {@code </stream:stream>} tag). This is an indication that the client wishes to
+     * end the session.
+     *
+     * Sending such an end-of-stream is unrecoverable. This boolean can therefor not be changed from 'true' to 'false'.
+     */
+    public void setHasReceivedEndOfStream()
+    {
+        hasReceivedEndOfStream = true;
+        markNonResumable();
+    }
+
+    /**
+     * Returns a boolean value indicating if this client has sent an 'end of stream' event to the server (typically, this
+     * is a <tt></stream:stream></tt> tag). This is an indication that the client wishes to end the session.
+     *
+     * @return 'true' if an 'end of stream' event was received from the client, otherwise 'false'.
+     */
+    public boolean getHasReceivedEndOfStream()
+    {
+        return hasReceivedEndOfStream;
+    }
 }

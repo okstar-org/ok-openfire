@@ -73,6 +73,7 @@
                 <li><a href="#ofPresence">ofPresence</a></li>
                 <li><a href="#ofPrivate">ofPrivate</a></li>
                 <li><a href="#ofUser">ofUser</a></li>
+                <li><a href="#ofUserScram">ofUserScram</a></li>
                 <li><a href="#ofUserProp">ofUserProp</a></li>
                 <li><a href="#ofUserFlag">ofUserFlag</a></li>
 
@@ -91,6 +92,7 @@
                 <li><a href="#ofMucRoom">ofMucRoom</a></li>
 
                 <li><a href="#ofMucRoomProp">ofMucRoomProp</a></li>
+                <li><a href="#ofMucRoomRetiree">ofMucRoomRetiree</a></li>
                 <li><a href="#ofMucAffiliation">ofMucAffiliation</a></li>
                 <li><a href="#ofMucMember">ofMucMember</a></li>
                 <li><a href="#ofMucConversationLog">ofMucConversationLog</a></li>
@@ -400,6 +402,57 @@
                 <td>VARCHAR</td>
                 <td>15</td>
                 <td>Last Modified Date</td>
+            </tr>
+            </tbody>
+        </table>
+        &nbsp;<a href="#top" class="top">top of page</a>
+
+        <table id="ofUserScram" class="dbtable">
+            <tbody>
+            <tr>
+                <th colspan="4">ofUserScram (SCRAM authentication credentials, per user and mechanism)</th>
+            </tr>
+            <tr>
+                <th>Column Name</th>
+                <th>Type</th>
+                <th>Length</th>
+                <th>Description</th>
+            </tr>
+            <tr class="primary-key">
+                <td>username</td>
+                <td>VARCHAR</td>
+                <td>64</td>
+                <td>User Name (Primary Key)</td>
+            </tr>
+            <tr class="primary-key">
+                <td>mechanism</td>
+                <td>VARCHAR</td>
+                <td>32</td>
+                <td>SCRAM mechanism name, e.g. SCRAM-SHA-1 (Primary Key)</td>
+            </tr>
+            <tr>
+                <td>storedKey</td>
+                <td>VARCHAR</td>
+                <td>255</td>
+                <td>Base64-encoded StoredKey for this mechanism</td>
+            </tr>
+            <tr>
+                <td>serverKey</td>
+                <td>VARCHAR</td>
+                <td>255</td>
+                <td>Base64-encoded ServerKey for this mechanism</td>
+            </tr>
+            <tr>
+                <td>salt</td>
+                <td>VARCHAR</td>
+                <td>255</td>
+                <td>Base64-encoded salt used to derive the credential</td>
+            </tr>
+            <tr>
+                <td>iterations</td>
+                <td>NUMBER</td>
+                <td>n/a</td>
+                <td>Iteration count used to derive the credential</td>
             </tr>
             </tbody>
         </table>
@@ -786,7 +839,7 @@
                 <td>summary</td>
                 <td>VARCHAR</td>
                 <td>255</td>
-                <td>Summary of what occured in event</td>
+                <td>Summary of what occurred in event</td>
             </tr>
             <tr>
                 <td>node</td>
@@ -984,6 +1037,12 @@
                 <td>Flag indicating whether room conversations are logged or not</td>
             </tr>
             <tr>
+                <td>retireOnDeletion</td>
+                <td>NUMBER</td>
+                <td>n/a</td>
+                <td>Flag indicating whether room name should be retired on deletion (prevented from future use)</td>
+            </tr>
+            <tr>
                 <td>subject</td>
                 <td>VARCHAR</td>
                 <td>100</td>
@@ -1045,6 +1104,51 @@
                 <td>VARCHAR</td>
                 <td>4000</td>
                 <td>Property Value</td>
+            </tr>
+            </tbody>
+        </table>
+        &nbsp;<a href="#top" class="top">top of page</a>
+
+        <table id="ofMucRoomRetiree" class="dbtable">
+            <tbody>
+            <tr>
+                <th colspan="4">ofMucRoomRetiree (Retired Groupchat room names)</th>
+            </tr>
+            <tr>
+                <th>Column Name</th>
+                <th>Type</th>
+                <th>Length</th>
+                <th>Description</th>
+            </tr>
+            <tr class="primary-key">
+                <td>serviceID</td>
+                <td>NUMBER</td>
+                <td>n/a</td>
+                <td>ID of associated MUC service (Primary Key)</td>
+            </tr>
+            <tr class="primary-key">
+                <td>name</td>
+                <td>VARCHAR</td>
+                <td>50</td>
+                <td>Name of the retired room (Primary Key)</td>
+            </tr>
+            <tr>
+                <td>alternateJID</td>
+                <td>VARCHAR</td>
+                <td>2000</td>
+                <td>Optional JID specified on room deletion</td>
+            </tr>
+            <tr>
+                <td>reason</td>
+                <td>VARCHAR</td>
+                <td>1024</td>
+                <td>Optional text explaining why the room was retired</td>
+            </tr>
+            <tr>
+                <td>retiredAt</td>
+                <td>TIMESTAMP</td>
+                <td>n/a</td>
+                <td>When the room was retired (defaults to current timestamp)</td>
             </tr>
             </tbody>
         </table>

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2023-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ import org.jivesoftware.Fixtures;
 import org.jivesoftware.openfire.event.GroupEventDispatcher;
 import org.jivesoftware.openfire.event.GroupEventListener;
 import org.jivesoftware.util.CacheableOptional;
-import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.PersistableMap;
 import org.jivesoftware.util.cache.Cache;
 import org.jivesoftware.util.cache.CacheFactory;
@@ -28,7 +27,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.xmpp.packet.JID;
 
-import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -45,6 +43,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class GroupTest
 {
     private static Cache<String, CacheableOptional<Group>> groupCache;
+    private static Cache<String, java.io.Serializable> groupMetaCache;
 
     private GroupManager groupManager;
 
@@ -53,51 +52,42 @@ public class GroupTest
         Fixtures.reconfigureOpenfireHome();
         Fixtures.disableDatabasePersistence();
         groupCache = CacheFactory.createCache("Group");
+        groupMetaCache = CacheFactory.createCache("Group Metadata Cache");
         groupCache.clear();
-        JiveGlobals.setProperty("provider.group.className", GroupTest.TestGroupProvider.class.getName());
+        groupMetaCache.clear();
     }
 
     @BeforeEach
     public void setUp() {
-        // Ensure that Openfire caches are reset before each test to avoid tests to affect each-other.
+        // Reset shared caches before each test, then install a test-owned GroupManager instance.
         Arrays.stream(CacheFactory.getAllCaches()).forEach(Map::clear);
-        groupManager = GroupManager.getInstance();
+
+        groupManager = new GroupManager(new TestGroupProvider(), groupCache, groupMetaCache);
+        // Group instances resolve their manager via GroupManager.getInstance(), so keep the test instance active.
+        GroupManager.setInstance(groupManager);
     }
 
     @AfterEach
     public void tearDown() {
-        // Teardown fixture by removing any groups that have been created.
-        GroupManager.getInstance().getGroups().forEach(group -> {
+        // Remove any groups created during the test to leave the singleton-backed state clean.
+        groupManager.getGroups().forEach(group -> {
             try {
-                GroupManager.getInstance().deleteGroup(group);
+                groupManager.deleteGroup(group);
             } catch (GroupNotFoundException e) {
                 throw new RuntimeException(e);
             }
         });
 
+        GroupManager.setInstance(null);
         groupCache.clear();
+        groupMetaCache.clear();
     }
 
     @AfterAll
-    public static void afterClass() throws Exception {
-
-        // Reset static fields after use (to not confuse other test classes).
-        for (String fieldName : Arrays.asList("INSTANCE", "provider")) {
-            Field field = GroupManager.class.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            field.set(null, null);
-            field.setAccessible(false);
-        }
-
-        GroupManager.getInstance().getGroups().forEach(group -> {
-            try {
-                GroupManager.getInstance().deleteGroup(group);
-            } catch (GroupNotFoundException e) {
-                throw new RuntimeException(e);
-            }
-        });
-
+    public static void afterClass() {
         groupCache.clear();
+        groupMetaCache.clear();
+        GroupManager.setInstance(null);
     }
 
     /**
@@ -317,6 +307,28 @@ public class GroupTest
     }
 
     /**
+     * Verifies that the corresponding event listener has been invoked after a group has been modified.
+     */
+    @Test
+    public void testEventListenerInvokedGroupModified() throws Exception
+    {
+        // Setup test fixture.
+        final String groupName = "unit-test-group-group-modified";
+        final String newDescription = "This is a changed description";
+        final Group group = groupManager.createGroup(groupName);
+        final RecordingGroupEventListener listener = new RecordingGroupEventListener();
+        GroupEventDispatcher.addListener(listener);
+
+        // Execute system under test.
+        group.setDescription(newDescription);
+
+        // Verify results.
+        assertEquals(groupName, listener.lastGroupModified);
+        assertEquals("descriptionModified", listener.lastParams.get("type"));
+        assertNull(listener.lastParams.get("originalValue"));
+    }
+
+    /**
      * Verifies that the group contained in the Group cache contains an admin user after it has been added to the group.
      */
     @Test
@@ -502,7 +514,7 @@ public class GroupTest
 
         // Verify results.
         List<String> sharedWithGroups = group.getSharedWithUsersInGroupNames();
-        assertEquals( sharedWithGroups.size(), 2);
+        assertEquals(2, sharedWithGroups.size());
         assertTrue(sharedWithGroups.contains(groupName));
         assertTrue(sharedWithGroups.contains(groupNameSharedWith));
     }
@@ -528,10 +540,80 @@ public class GroupTest
 
         // Verify results.
         List<String> sharedWithGroups = group.getSharedWithUsersInGroupNames();
-        assertEquals( sharedWithGroups.size(), 3);
+        assertEquals(3, sharedWithGroups.size());
         assertTrue(sharedWithGroups.contains(groupName));
         assertTrue(sharedWithGroups.contains(groupNameSharedWith1));
         assertTrue(sharedWithGroups.contains(groupNameSharedWith2));
+    }
+
+    /**
+     * Verifies that Group.setDescription() updates the group description.
+     */
+    @Test
+    public void testSetGroupDescription() throws Exception
+    {
+        // Setup test fixture.
+        final String groupName = "unit-test-group-set-description";
+        final String originalDescription = null;
+        final String newDescription = "This is a new description";
+        final Group group = groupManager.createGroup(groupName);
+
+        // Verify initial state
+        assertEquals(originalDescription, group.getDescription());
+
+        // Execute system under test.
+        group.setDescription(newDescription);
+
+        // Verify results.
+        assertEquals(newDescription, group.getDescription());
+    }
+
+    /**
+     * Verifies that Group.setName() doesn't change the name when the group is read-only.
+     */
+    @Test
+    public void testSetGroupNameReadOnly() throws Exception
+    {
+        // Setup test fixture.
+        final String groupName = "unit-test-group-readonly";
+        final String newName = "unit-test-group-new-readonly";
+
+        // Make the provider read-only by using a mock
+        final GroupProvider readOnlyProvider = new TestGroupProviderReadOnly();
+        readOnlyProvider.createGroup(groupName);
+        groupManager = new GroupManager(readOnlyProvider, groupCache, groupMetaCache);
+        GroupManager.setInstance(groupManager);
+        final Group readOnlyGroup = readOnlyProvider.getGroup(groupName);
+
+        // Execute system under test.
+        readOnlyGroup.setName(newName);
+
+        // Verify results - name should not change
+        assertEquals(groupName, readOnlyGroup.getName());
+    }
+
+    /**
+     * Verifies that Group.setDescription() doesn't change the description when the group is read-only.
+     */
+    @Test
+    public void testSetGroupDescriptionReadOnly() throws Exception
+    {
+        // Setup test fixture - use a read-only provider.
+        final String groupName = "unit-test-group-readonly-desc";
+        final String newDescription = "new description";
+
+        // Make the provider read-only by using a mock
+        final GroupProvider readOnlyProvider = new TestGroupProviderReadOnly();
+        readOnlyProvider.createGroup(groupName);
+        groupManager = new GroupManager(readOnlyProvider, groupCache, groupMetaCache);
+        GroupManager.setInstance(groupManager);
+        final Group readOnlyGroup = readOnlyProvider.getGroup(groupName);
+
+        // Execute system under test - try to change description
+        readOnlyGroup.setDescription(newDescription);
+
+        // Verify results - description should not change (remains null since read-only prevents updates)
+        assertNull(readOnlyGroup.getDescription());
     }
 
     /**
@@ -547,52 +629,52 @@ public class GroupTest
         public String lastGroupAdminAdded;
         public String lastGroupAdminRemoved;
 
-        public Map lastParams;
+        public Map<String, ?> lastParams;
 
         @Override
-        public void groupCreated(Group group, Map params)
+        public void groupCreated(Group group, Map<String, ?> params)
         {
             lastGroupCreated = group.getName();
             lastParams = params;
         }
 
         @Override
-        public void groupDeleting(Group group, Map params)
+        public void groupDeleting(Group group, Map<String, ?> params)
         {
             lastGroupDeleted = group.getName();
             lastParams = params;
         }
 
         @Override
-        public void groupModified(Group group, Map params)
+        public void groupModified(Group group, Map<String, ?> params)
         {
             lastGroupModified = group.getName();
             lastParams = params;
         }
 
         @Override
-        public void memberAdded(Group group, Map params)
+        public void memberAdded(Group group, Map<String, ?> params)
         {
             lastGroupMemberAdded = group.getName();
             lastParams = params;
         }
 
         @Override
-        public void memberRemoved(Group group, Map params)
+        public void memberRemoved(Group group, Map<String, ?> params)
         {
             lastGroupMemberRemoved = group.getName();
             lastParams = params;
         }
 
         @Override
-        public void adminAdded(Group group, Map params)
+        public void adminAdded(Group group, Map<String, ?> params)
         {
             lastGroupAdminAdded = group.getName();
             lastParams = params;
         }
 
         @Override
-        public void adminRemoved(Group group, Map params)
+        public void adminRemoved(Group group, Map<String, ?> params)
         {
             lastGroupAdminRemoved = group.getName();
             lastParams = params;
@@ -649,7 +731,7 @@ public class GroupTest
             if (!descriptionsByGroupName.containsKey(oldName)) {
                 throw new GroupNotFoundException();
             }
-            if (!descriptionsByGroupName.containsKey(newName)) {
+            if (descriptionsByGroupName.containsKey(newName)) {
                 throw new GroupAlreadyExistsException();
             }
 
@@ -793,6 +875,16 @@ public class GroupTest
                     throw new UnsupportedOperationException();
                 }
             };
+        }
+    }
+
+    /**
+     * A read-only test implementation of GroupProvider for testing read-only scenarios.
+     */
+    public static class TestGroupProviderReadOnly extends TestGroupProvider {
+        @Override
+        public boolean isReadOnly() {
+            return true;
         }
     }
 }

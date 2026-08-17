@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -16,25 +16,27 @@
   - limitations under the License.
 --%>
 
-<%@ page import="org.jivesoftware.util.ParamUtils,
-                 org.jivesoftware.util.StringUtils,
-                 org.jivesoftware.util.CookieUtils,
-                 java.util.*,
-                 org.jivesoftware.openfire.muc.MUCRoom,
-                 org.xmpp.forms.*,
-                 org.dom4j.Element,
-                 org.xmpp.packet.IQ,
-                 org.xmpp.packet.Message,
-                 org.xmpp.packet.JID,
-                 gnu.inet.encoding.Stringprep,
+<%@ page import="gnu.inet.encoding.Stringprep,
                  gnu.inet.encoding.StringprepException,
-                 java.net.URLEncoder"
+                 java.net.URLEncoder,
+                 java.nio.charset.StandardCharsets,
+                 java.util.*,
+                 org.dom4j.Element,
+                 org.jivesoftware.openfire.muc.MUCRoom,
+                 org.jivesoftware.openfire.muc.NotAllowedException,
+                 org.jivesoftware.openfire.muc.Role,
+                 org.jivesoftware.openfire.muc.spi.MUCPersistenceManager,
+                 org.jivesoftware.openfire.vcard.VCardBean,
+                 org.jivesoftware.openfire.vcard.VCardManager,
+                 org.jivesoftware.util.CookieUtils,
+                 org.jivesoftware.util.ParamUtils,
+                 org.jivesoftware.util.StringUtils,
+                 org.xmpp.forms.*,
+                 org.xmpp.packet.IQ,
+                 org.xmpp.packet.JID,
+                 org.xmpp.packet.Message"
     errorPage="error.jsp"
 %>
-<%@ page import="org.jivesoftware.openfire.muc.NotAllowedException"%>
-<%@ page import="org.jivesoftware.openfire.muc.spi.MUCPersistenceManager" %>
-<%@ page import="org.jivesoftware.openfire.muc.MUCRole" %>
-
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c"%>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
@@ -49,6 +51,7 @@
     boolean save = ParamUtils.getBooleanParameter(request,"save");
     boolean success = ParamUtils.getBooleanParameter(request,"success");
     boolean addsuccess = ParamUtils.getBooleanParameter(request,"addsuccess");
+    boolean clearchatsuccess = ParamUtils.getBooleanParameter(request,"clearchatsuccess");
     String roomName = ParamUtils.getParameter(request,"roomName");
     String mucName = ParamUtils.getParameter(request,"mucName");
     String roomJIDStr = ParamUtils.getParameter(request,"roomJID");
@@ -94,11 +97,13 @@
     String allowpm = ParamUtils.getParameter(request, "roomconfig_allowpm");
     boolean publicRoom = ParamUtils.getBooleanParameter(request, "roomconfig_publicroom");
     boolean persistentRoom = ParamUtils.getBooleanParameter(request, "roomconfig_persistentroom");
+    boolean retireOnDeletion = ParamUtils.getBooleanParameter(request, "roomconfig_retireondel");
     boolean moderatedRoom = ParamUtils.getBooleanParameter(request, "roomconfig_moderatedroom");
     boolean membersOnly = ParamUtils.getBooleanParameter(request, "roomconfig_membersonly");
     boolean allowInvites = ParamUtils.getBooleanParameter(request, "roomconfig_allowinvites");
     boolean changeSubject = ParamUtils.getBooleanParameter(request, "roomconfig_changesubject");
     boolean enableLog = ParamUtils.getBooleanParameter(request, "roomconfig_enablelogging");
+    boolean preserveHistOnRoomDeletion = ParamUtils.getBooleanParameter(request, "roomconfig_preservehistondel");
     boolean reservedNick = ParamUtils.getBooleanParameter(request, "roomconfig_reservednick");
     boolean canchangenick = ParamUtils.getBooleanParameter(request, "roomconfig_canchangenick");
     boolean registration = ParamUtils.getBooleanParameter(request, "roomconfig_registration");
@@ -117,7 +122,7 @@
             response.sendRedirect("muc-room-summary.jsp");
         } else {
             // case when canceling a room edit, used on summary to set service
-            response.sendRedirect("muc-room-summary.jsp?roomJID="+URLEncoder.encode(roomJID.toBareJID(), "UTF-8"));
+            response.sendRedirect("muc-room-summary.jsp?roomJID="+URLEncoder.encode(roomJID.toBareJID(), StandardCharsets.UTF_8));
         }
         return;
     }
@@ -129,7 +134,7 @@
 
         if (room == null) {
             // The requested room name does not exist so return to the list of the existing rooms
-            response.sendRedirect("muc-room-summary.jsp?roomJID="+URLEncoder.encode(roomJID.toBareJID(), "UTF-8"));
+            response.sendRedirect("muc-room-summary.jsp?roomJID="+URLEncoder.encode(roomJID.toBareJID(), StandardCharsets.UTF_8));
             return;
         }
     }
@@ -177,7 +182,7 @@
             errors.put("room_topic_longer","room_topic_longer");
         }
 
-        if (create && errors.size() == 0) {
+        if (create && errors.isEmpty()) {
             if (roomName == null || roomName.contains("@")) {
                 errors.put("roomName","roomName");
             }
@@ -191,7 +196,7 @@
                 }
             }
 
-            if (errors.size() == 0) {
+            if (errors.isEmpty()) {
                 // Check that the requested room ID is available
                 room = webManager.getMultiUserChatManager().getMultiUserChatService(roomJID).getChatRoom(roomName);
                 if (room != null) {
@@ -208,14 +213,19 @@
                         }
                     }
                     catch (NotAllowedException e) {
-                        // This user is not allowed to create rooms
-                        errors.put("not_enough_permissions", "not_enough_permissions");
+                        // This user is not allowed to create rooms, or it has been retired
+                        String cause = switch(e.getReason()) {
+                            case ROOM_RETIRED -> "room_retired";
+                            case INSUFFICIENT_PERMISSIONS -> "not_enough_permissions";
+                        };
+
+                        errors.put(cause, cause);
                     }
                 }
             }
         }
 
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             // Set the new configuration sending an IQ packet with an dataform
             final DataForm dataForm = new DataForm(DataForm.Type.submit);
             dataForm.addField("FORM_TYPE", null, FormField.Type.hidden).addValue("http://jabber.org/protocol/muc#roomconfig");
@@ -226,17 +236,18 @@
 
             final FormField broadcastField = dataForm.addField("muc#roomconfig_presencebroadcast", null, null);
             if (broadcastModerator) {
-                broadcastField.addValue(MUCRole.Role.moderator);
+                broadcastField.addValue(Role.moderator);
             }
             if (broadcastParticipant) {
-                broadcastField.addValue(MUCRole.Role.participant);
+                broadcastField.addValue(Role.participant);
             }
             if (broadcastVisitor) {
-                broadcastField.addValue(MUCRole.Role.visitor);
+                broadcastField.addValue(Role.visitor);
             }
 
             dataForm.addField("muc#roomconfig_publicroom", null, null).addValue(publicRoom ? "1": "0");
             dataForm.addField("muc#roomconfig_persistentroom", null, null).addValue(persistentRoom ? "1": "0");
+            dataForm.addField("{http://igniterealtime.org}muc#roomconfig_retireondel", null, null).addValue(retireOnDeletion ? "1": "0");
             dataForm.addField("muc#roomconfig_moderatedroom", null, null).addValue(moderatedRoom ? "1": "0");
             dataForm.addField("muc#roomconfig_membersonly", null, null).addValue(membersOnly ? "1": "0");
             dataForm.addField("muc#roomconfig_allowinvites", null, null).addValue(allowInvites ? "1": "0");
@@ -245,6 +256,7 @@
             dataForm.addField("muc#roomconfig_whois", null, null).addValue(whois);
             dataForm.addField("muc#roomconfig_allowpm", null, null).addValue(allowpm);
             dataForm.addField("muc#roomconfig_enablelogging", null, null).addValue(enableLog ? "1": "0");
+            dataForm.addField("{http://igniterealtime.org}muc#roomconfig_preservehistondel", null, null).addValue(preserveHistOnRoomDeletion ? "1": "0");
             dataForm.addField("x-muc#roomconfig_reservednick", null, null).addValue(reservedNick ? "1": "0");
             dataForm.addField("x-muc#roomconfig_canchangenick", null, null).addValue(canchangenick ? "1": "0");
             dataForm.addField("x-muc#roomconfig_registration", null, null).addValue(registration ? "1": "0");
@@ -279,12 +291,12 @@
             // Changes good, so redirect
             String params;
             if (create) {
-                params = "addsuccess=true&roomJID=" + URLEncoder.encode(roomJID.toBareJID(), "UTF-8");
+                params = "addsuccess=true&roomJID=" + URLEncoder.encode(roomJID.toBareJID(), StandardCharsets.UTF_8);
                 // Log the event
                 webManager.logEvent("created new MUC room "+roomName, "subject = "+roomSubject+"\nroomdesc = "+description+"\nroomname = "+naturalName+"\nmaxusers = "+maxUsers);
             }
             else {
-                params = "success=true&roomJID=" + URLEncoder.encode(roomJID.toBareJID(), "UTF-8");
+                params = "success=true&roomJID=" + URLEncoder.encode(roomJID.toBareJID(), StandardCharsets.UTF_8);
                 // Log the event
                 webManager.logEvent("updated MUC room "+roomName, "subject = "+roomSubject+"\nroomdesc = "+description+"\nroomname = "+naturalName+"\nmaxusers = "+maxUsers);
             }
@@ -307,11 +319,13 @@
             allowpm = MUCPersistenceManager.getProperty(serviceName, "room.allowpm", "anyone");
             publicRoom = MUCPersistenceManager.getBooleanProperty(serviceName, "room.publicRoom", true);
             persistentRoom = true; // Rooms created from the admin console are always persistent
+            retireOnDeletion = MUCPersistenceManager.getBooleanProperty(serviceName, "room.retireOnDeletion", false);
             moderatedRoom = MUCPersistenceManager.getBooleanProperty(serviceName, "room.moderated", false);
             membersOnly = MUCPersistenceManager.getBooleanProperty(serviceName, "room.membersOnly", false);
             allowInvites = MUCPersistenceManager.getBooleanProperty(serviceName, "room.canOccupantsInvite", false);
             changeSubject = MUCPersistenceManager.getBooleanProperty(serviceName, "room.canOccupantsChangeSubject", false);
             enableLog = MUCPersistenceManager.getBooleanProperty(serviceName, "room.logEnabled", true);
+            preserveHistOnRoomDeletion = MUCPersistenceManager.getBooleanProperty(serviceName, "room.preserveHistOnRoomDeletion", true);
             reservedNick = MUCPersistenceManager.getBooleanProperty(serviceName, "room.loginRestrictedToNickname", false);
             canchangenick = MUCPersistenceManager.getBooleanProperty(serviceName, "room.canChangeNickname", true);
             registration = MUCPersistenceManager.getBooleanProperty(serviceName, "room.registrationEnabled", true);
@@ -321,20 +335,22 @@
             description = room.getDescription();
             roomSubject = room.getSubject();
             maxUsers = Integer.toString(room.getMaxUsers());
-            broadcastModerator = room.canBroadcastPresence(MUCRole.Role.moderator);
-            broadcastParticipant = room.canBroadcastPresence(MUCRole.Role.participant);
-            broadcastVisitor = room.canBroadcastPresence(MUCRole.Role.visitor);
+            broadcastModerator = room.canBroadcastPresence(Role.moderator);
+            broadcastParticipant = room.canBroadcastPresence(Role.participant);
+            broadcastVisitor = room.canBroadcastPresence(Role.visitor);
             password = room.getPassword();
             confirmPassword = room.getPassword();
             whois = (room.canAnyoneDiscoverJID() ? "anyone" : "moderator");
             allowpm = room.canSendPrivateMessage();
             publicRoom = room.isPublicRoom();
             persistentRoom = room.isPersistent();
+            retireOnDeletion = room.isRetireOnDeletion();
             moderatedRoom = room.isModerated();
             membersOnly = room.isMembersOnly();
             allowInvites = room.canOccupantsInvite();
             changeSubject = room.canOccupantsChangeSubject();
             enableLog = room.isLogEnabled();
+            preserveHistOnRoomDeletion = room.isPreserveHistOnRoomDeletionEnabled();
             reservedNick = room.isLoginRestrictedToNickname();
             canchangenick = room.canChangeNickname();
             registration = room.isRegistrationEnabled();
@@ -342,10 +358,18 @@
     }
     roomName = roomName == null ? "" : roomName;
 
+    if (roomJID != null) {
+    final Element vCardElement = VCardManager.getInstance().getVCard(roomJID.toString());
+        VCardBean vCardBean = new VCardBean();
+        vCardBean.loadFromElement(vCardElement);
+        pageContext.setAttribute("vCard", vCardBean);
+    }
+
     pageContext.setAttribute("errors", errors);
     pageContext.setAttribute("create", create);
     pageContext.setAttribute("success", success);
     pageContext.setAttribute("addsuccess", addsuccess);
+    pageContext.setAttribute("clearchatsuccess", clearchatsuccess);
     pageContext.setAttribute("room", room);
     pageContext.setAttribute("roomJID", roomJID);
     pageContext.setAttribute("roomJIDBare", roomJID != null ? roomJID.toBareJID() : null);
@@ -364,6 +388,7 @@
     pageContext.setAttribute("whois", whois);
     pageContext.setAttribute("allowpm", allowpm);
     pageContext.setAttribute("publicRoom", publicRoom);
+    pageContext.setAttribute("retireOnDeletion", retireOnDeletion);
     pageContext.setAttribute("moderatedRoom", moderatedRoom);
     pageContext.setAttribute("membersonly", membersOnly);
     pageContext.setAttribute("allowInvites", allowInvites);
@@ -372,6 +397,7 @@
     pageContext.setAttribute("canchangenick", canchangenick);
     pageContext.setAttribute("registration", registration);
     pageContext.setAttribute("enableLog", enableLog);
+    pageContext.setAttribute("preserveHistOnRoomDeletion", preserveHistOnRoomDeletion);
 
 %>
 
@@ -388,8 +414,72 @@
             </c:otherwise>
         </c:choose>
 
-        <meta name="extraParams" content="<%= "roomJID="+(roomJID != null ? URLEncoder.encode(roomJID.toBareJID(), "UTF-8") : "")+"&create="+create %>"/>
+        <meta name="extraParams" content="<%= "roomJID="+(roomJID != null ? URLEncoder.encode(roomJID.toBareJID(), StandardCharsets.UTF_8) : "")+"&create="+create %>"/>
         <meta name="helpPage" content="view_group_chat_room_summary.html"/>
+        <style>
+            /* Inspired by https://www.w3schools.com/howto/howto_css_modal_images.asp */
+            #photo {
+                border-radius: 2px;
+                cursor: pointer;
+                transition: 0.3s;
+            }
+
+            #photo:hover {opacity: 0.7;}
+
+            .modal {
+                display: none; /* Hidden by default */
+                position: fixed; /* Stay in place */
+                z-index: 1; /* Sit on top */
+                padding-top: 100px; /* Location of the box */
+                left: 0;
+                top: 0;
+                width: 100%; /* Full width */
+                height: 100%; /* Full height */
+                overflow: auto; /* Enable scroll if needed */
+                background-color: rgb(0,0,0); /* Fallback color */
+                background-color: rgba(0,0,0,0.9); /* Black w/ opacity */
+            }
+
+            /* Modal Content (Image) */
+            .modal-content {
+                margin: auto;
+                display: block;
+                width: 80%;
+                max-width: 700px;
+                animation-name: zoom;
+                animation-duration: 0.6s;
+            }
+
+            @keyframes zoom {
+                from {transform:scale(0)}
+                to {transform:scale(1)}
+            }
+
+            /* The Close Button */
+            .close {
+                position: absolute;
+                top: 15px;
+                right: 35px;
+                color: #f1f1f1;
+                font-size: 40px;
+                font-weight: bold;
+                transition: 0.3s;
+            }
+
+            .close:hover,
+            .close:focus {
+                color: #bbb;
+                text-decoration: none;
+                cursor: pointer;
+            }
+
+            /* 100% Image Width on Smaller Screens */
+            @media only screen and (max-width: 700px) {
+                .modal-content {
+                    width: 100%;
+                }
+            }
+        </style>
     </head>
     <body>
 
@@ -408,6 +498,7 @@
                         <c:when test="${err.key eq 'roomName'}"><fmt:message key="muc.room.edit.form.valid_hint" /></c:when>
                         <c:when test="${err.key eq 'room_already_exists'}"><fmt:message key="muc.room.edit.form.error_created_id" /></c:when>
                         <c:when test="${err.key eq 'not_enough_permissions'}"><fmt:message key="muc.room.edit.form.error_created_privileges" /></c:when>
+                        <c:when test="${err.key eq 'room_retired'}"><fmt:message key="muc.room.edit.form.error_room_retired" /></c:when>
                         <c:when test="${err.key eq 'room_topic'}"><fmt:message key="muc.room.edit.form.valid_hint_subject" /></c:when>
                         <c:when test="${err.key eq 'room_topic_longer'}"><fmt:message key="muc.room.edit.form.valid_hint_subject_too_long" /></c:when>
                         <c:otherwise>
@@ -430,6 +521,11 @@
                 <fmt:message key="muc.room.edit.form.created" />
             </admin:infobox>
         </c:when>
+        <c:when test="${clearchatsuccess}">
+            <admin:infoBox type="success">
+                <fmt:message key="muc.room.summary.cleared_chat" />
+            </admin:infoBox>
+        </c:when>
     </c:choose>
 
     <c:if test="${room.locked}">
@@ -449,15 +545,17 @@
             </p>
             <div class="jive-table">
                 <table>
-                    <thead>
                     <tr>
                         <th scope="col"><fmt:message key="muc.room.edit.form.room_id" /></th>
                         <th scope="col"><fmt:message key="muc.room.edit.form.users" /></th>
                         <th scope="col"><fmt:message key="muc.room.edit.form.on" /></th>
                         <th scope="col"><fmt:message key="muc.room.edit.form.modified" /></th>
+                        <c:if test="${not empty vCard.photo}">
+                            <td style="width: 5em;" rowspan="2">
+                                <img id="photo" src="/user/vcard/photo/?username=${admin:urlEncode(roomJID)}" alt="${admin:escapeHTMLTags(room.name)}" style="height: 4em" onclick="document.getElementById('photoModal').style.display='block';"/>
+                            </td>
+                        </c:if>
                     </tr>
-                    </thead>
-                    <tbody>
                     <tr>
                         <td>
                             <c:out value="${room.name}"/>
@@ -490,7 +588,6 @@
                             <fmt:formatDate value="${room.modificationDate}" dateStyle="medium" timeStyle="short"/>
                         </td>
                     </tr>
-                    </tbody>
                 </table>
             </div>
             <br>
@@ -551,15 +648,15 @@
                     </tr>
                     <tr>
                         <td><label for="roomconfig_roomname"><fmt:message key="muc.room.edit.form.room_name" /></label>: *</td>
-                        <td><input type="text" name="roomconfig_roomname" id="roomconfig_roomname" value="${empty naturalName ? "" : fn:escapeXml(naturalName)}"></td>
+                        <td><input type="text" name="roomconfig_roomname" id="roomconfig_roomname" value="${fn:escapeXml(naturalName)}"></td>
                     </tr>
                     <tr>
                         <td><label for="roomconfig_roomdesc"><fmt:message key="muc.room.edit.form.description" /></label>:  *</td>
-                        <td><input name="roomconfig_roomdesc" id="roomconfig_roomdesc" value="${empty description ? "" : fn:escapeXml(description)}" type="text" size="40"></td>
+                        <td><input name="roomconfig_roomdesc" id="roomconfig_roomdesc" value="${fn:escapeXml(description)}" type="text" size="40"></td>
                     </tr>
                     <tr>
                         <td><label for="room_topic"><fmt:message key="muc.room.edit.form.topic" /></label>:</td>
-                        <td><input name="room_topic" id="room_topic" value="${empty roomSubject ? "" : fn:escapeXml(roomSubject)}" type="text" size="40"></td>
+                        <td><input name="room_topic" id="room_topic" value="${fn:escapeXml(roomSubject)}" type="text" size="40"></td>
                     </tr>
                     <tr>
                         <td><label for="roomconfig_maxusers"><fmt:message key="muc.room.edit.form.max_room" /></label>:</td>
@@ -619,6 +716,10 @@
                                 <label for="public"><fmt:message key="muc.room.edit.form.list_room" /></label></td>
                         </tr>
                         <tr>
+                            <td><input name="roomconfig_retireondel" value="true" id="retireOnDeletion" type="checkbox" ${retireOnDeletion ? 'checked' : ''}>
+                            <label for="retireOnDeletion"><fmt:message key="muc.default.settings.retire" /></label></td>
+                        </tr>
+                        <tr>
                             <td><input type="checkbox" name="roomconfig_moderatedroom" value="true" id="moderated" ${moderatedRoom ? 'checked' : ''}>
                                 <label for="moderated"><fmt:message key="muc.room.edit.form.room_moderated" /></label></td>
                         </tr>
@@ -650,6 +751,10 @@
                             <td><input type="checkbox" name="roomconfig_enablelogging" value="true" id="enablelogging" ${enableLog ? 'checked' : ''}>
                                 <label for="enablelogging"><fmt:message key="muc.room.edit.form.log" /></label></td>
                         </tr>
+                        <tr>
+                            <td><input type="checkbox" name="roomconfig_preservehistondel" value="true" id="preserveHistOnRoomDeletion" ${preserveHistOnRoomDeletion ? 'checked' : ''}>
+                                <label for="preserveHistOnRoomDeletion"><fmt:message key="muc.room.edit.form.preserve_hist_on_room_deletion" /></label></td>
+                        </tr>
                     </tbody>
                     </table>
                 </fieldset>
@@ -662,6 +767,11 @@
     </table>
     <span class="jive-description">* <fmt:message key="muc.room.edit.form.required_field" /> </span>
 </form>
+
+<div id="photoModal" class="modal">
+    <span class="close" onclick="document.getElementById('photoModal').style.display='none';">&times;</span>
+    <img class="modal-content" src="/user/vcard/photo/?username=${admin:urlEncode(roomJID)}" alt="${admin:escapeHTMLTags(room.name)}"/>
+</div>
 
     </body>
 </html>

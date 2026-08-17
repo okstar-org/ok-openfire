@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.jivesoftware.openfire.pubsub;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Interner;
 import com.google.common.collect.Interners;
 import org.dom4j.DocumentHelper;
@@ -37,6 +38,9 @@ import org.xmpp.forms.DataForm;
 import org.xmpp.forms.FormField;
 import org.xmpp.packet.*;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
@@ -73,7 +77,7 @@ public class PubSubEngine
      * synchronously, the returned future completes immediately. Note that the returned future will only return
      * <code>null</code> when it completes.
      */
-    public Future process(final PubSubService service, final IQ iq) {
+    public Future<?> process(final PubSubService service, final IQ iq) {
         // Ignore IQs of type ERROR or RESULT
         if (IQ.Type.error == iq.getType() || IQ.Type.result == iq.getType()) {
             return new ImmediateFuture<>();
@@ -90,12 +94,7 @@ public class PubSubEngine
                 // Entity publishes an item
                 // Complete this asynchronously, as UserManager::isRegisteredUser(JID) blocks, waiting for a result which may come in on this thread
                 final Element finalAction = action;
-                return TaskEngine.getInstance().submit(new Runnable() {
-                    @Override
-                    public void run() {
-                        publishItemsToNode(service, iq, finalAction);
-                    }
-                });
+                return TaskEngine.getInstance().submit(() -> publishItemsToNode(service, iq, finalAction));
             }
             action = childElement.element("subscribe");
             if (action != null) {
@@ -119,12 +118,7 @@ public class PubSubEngine
                 // Entity is requesting to create a new node
                 final Element finalAction = action;
                 // Complete this asynchronously, as UserManager::isRegisteredUser(JID) blocks, waiting for a result which may come in on this thread
-                return TaskEngine.getInstance().submit(new Runnable() {
-                    @Override
-                    public void run() {
-                        createNode(service, iq, childElement, finalAction, getPublishOptions( iq ));
-                    }
-                });
+                return TaskEngine.getInstance().submit(() -> createNode(service, iq, childElement, finalAction, getPublishOptions( iq )));
             }
             action = childElement.element("unsubscribe");
             if (action != null) {
@@ -421,6 +415,16 @@ public class PubSubEngine
                 sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
                 return;
             }
+            // Check that the payload size does not exceed the node's configured maximum (XEP-0060 §7.1.3.5)
+            if (payload != null) {
+                final int payloadSize = payload.asXML().getBytes(StandardCharsets.UTF_8).length;
+                if (payloadSize > leafNode.getMaxPayloadSize()) {
+                    Element pubsubError = DocumentHelper.createElement(QName.get(
+                            "payload-too-big", "http://jabber.org/protocol/pubsub#errors"));
+                    sendErrorPacket(iq, PacketError.Condition.not_acceptable, pubsubError);
+                    return;
+                }
+            }
             items.add(item);
         }
 
@@ -491,16 +495,32 @@ public class PubSubEngine
     }
 
     /**
-     * Checks of the configuration of the node meets the preconditions, as supplied in the dataform.
+     * Checks whether the configuration of a node satisfies the supplied preconditions.
      *
-     * This method returns true only if the configuration of the node at least contains each of the fields
-     * defined in the preconditions (with matching values).
+     * This method is used to evaluate the "publish-options as preconditions" flow of XEP-0060 (§7.1.5):
+     * a publisher supplies a data form naming the configuration fields it requires the (existing) node to
+     * have, and publishing is only allowed if the node already meets them.
      *
-     * @param node The node (cannot be null)
-     * @param preconditions The preconditions (can be null, in which case 'true' is returned).
-     * @return True if all preconditions are met, otherwise false.
+     * For the preconditions to be met, the node's configuration must, for every precondition field, contain
+     * a field with the same variable name whose value(s) include all of the value(s) required by the
+     * precondition. The node may have additional values beyond those required; only the absence of a
+     * required value causes rejection. Value comparison is order-independent: a field's values are treated
+     * as a set rather than an ordered list.
+     *
+     * Comparison follows the boolean equivalences defined by XEP-0004: the values {@code "true"} and
+     * {@code "1"} are considered equal, as are {@code "false"} and {@code "0"}.
+     *
+     * A precondition is not satisfied if the node configuration is missing the named field entirely, or if
+     * any value required by the precondition is absent from the node's value set (after boolean
+     * normalization). The {@code FORM_TYPE} field is ignored and never compared.
+     *
+     * @param node The node whose configuration is checked (cannot be null).
+     * @param preconditions The preconditions to check against. May be null, in which case {@code true} is
+     *                      returned (no preconditions to satisfy).
+     * @return {@code true} if every precondition is met, otherwise {@code false}.
      */
-    private boolean nodeMeetsPreconditions( Node node, DataForm preconditions )
+    @VisibleForTesting
+    static boolean nodeMeetsPreconditions(final Node node, final DataForm preconditions)
     {
         if ( preconditions == null )
         {
@@ -508,9 +528,15 @@ public class PubSubEngine
         }
 
         final DataForm conditions = node.getConfigurationForm(null);
+        if ( conditions == null )
+        {
+            // No configuration to match against; any non-FORM_TYPE precondition cannot be met.
+            return preconditions.getFields().stream().allMatch( f -> "FORM_TYPE".equals( f.getVariable() ) );
+        }
+
         for ( final FormField precondition : preconditions.getFields() )
         {
-            if ( precondition.getVariable().equals( "FORM_TYPE" ) )
+            if ( "FORM_TYPE".equals( precondition.getVariable() ) )
             {
                 continue;
             }
@@ -518,30 +544,43 @@ public class PubSubEngine
             final FormField condition = conditions.getField( precondition.getVariable() );
             if ( condition == null )
             {
-                // Unknown condition. Reject.
+                // Node config does not define this field. Reject.
                 return false;
             }
 
-            if ( condition.getValues().size() > 1 )
+            final Set<String> nodeValues = normalizeValues( condition );
+            final Set<String> requiredValues = normalizeValues( precondition );
+
+            if ( !nodeValues.containsAll( requiredValues ) )
             {
-                if ( !condition.getValues().containsAll( precondition.getValues() ) || !precondition.getValues().containsAll( condition.getValues() ) )
-                {
-                    // The condition value list does contain different values than the precondtion value list.
-                    return false;
-                }
-            }
-            else
-            {
-                final String a = condition.getFirstValue();
-                final String b = precondition.getFirstValue();
-                if ( !a.equals( b ) && !(a.equals( "true" ) && b.equals( "1" )) && !(a.equals( "1" ) && b.equals( "true" ))
-                                    && !(a.equals( "false" ) && b.equals( "0" )) && !(a.equals( "0" ) && b.equals( "false" )) )
-                {
-                    return false;
-                }
+                return false;
             }
         }
+
         return true;
+    }
+
+    private static Set<String> normalizeValues(final FormField field)
+    {
+        final Set<String> normalized = new HashSet<>();
+        if ( field == null )
+        {
+            return normalized;
+        }
+        for ( final String value : field.getValues() )
+        {
+            if ( value == null )
+            {
+                continue;
+            }
+            switch ( value )
+            {
+                case "true":  normalized.add( "1" ); break;
+                case "false": normalized.add( "0" ); break;
+                default:      normalized.add( value );
+            }
+        }
+        return normalized;
     }
 
     private void deleteItems(PubSubService service, IQ iq, Element retractElement) {
@@ -564,7 +603,7 @@ public class PubSubEngine
             }
         }
         // Get the items to delete
-        Iterator itemElements = retractElement.elementIterator("item");
+        Iterator<Element> itemElements = retractElement.elementIterator("item");
         if (!itemElements.hasNext()) {
             Element pubsubError = DocumentHelper.createElement(QName.get(
                     "item-required", "http://jabber.org/protocol/pubsub#errors"));
@@ -627,7 +666,7 @@ public class PubSubEngine
         leafNode.deleteItems(items);
     }
 
-    private Future subscribeNode(final PubSubService service, final IQ iq, final Element childElement, Element subscribeElement) {
+    private Future<?> subscribeNode(final PubSubService service, final IQ iq, final Element childElement, Element subscribeElement) {
         String nodeID = subscribeElement.attributeValue("node");
         final Node node;
         if (nodeID == null) {
@@ -673,18 +712,13 @@ public class PubSubEngine
         }
 
         // Complete this asynchronously, as UserManager::isRegisteredUser(JID) blocks, waiting for a result which may come in on this thread
-        return TaskEngine.getInstance().submit(new Runnable() {
-            @Override
-            public void run() {
-                subscribeNodeAsync(iq, subscriberJID, node, owner, service, from, childElement, accessModel);
-            }
-        });
+        return TaskEngine.getInstance().submit(() -> subscribeNodeAsync(iq, subscriberJID, node, owner, service, from, childElement, accessModel));
     }
 
     private void subscribeNodeAsync(final IQ iq, final JID subscriberJID, final Node node, final JID owner, final PubSubService service, final JID from, final Element childElement, final AccessModel accessModel) {
 
         // Check if the subscriber is an anonymous user.
-        if (XMPPServer.getInstance().isLocal(subscriberJID) && SessionManager.getInstance().isAnonymousRoute(subscriberJID.getNode())) {
+        if (SessionManager.getInstance().isAnonymousClientSession(subscriberJID)) {
             // Anonymous users cannot subscribe to the node. Return forbidden error
             // TODO OF-2506: figure out why anonymous users should not be allowed to subscribe. There is no way to check if remote users are anonymous anyway.
             sendErrorPacket(iq, PacketError.Condition.forbidden, null);
@@ -715,57 +749,8 @@ public class PubSubEngine
             }
         }
 
-        // If leaf node does not support multiple subscriptions then check whether subscriber is
-        // creating another subscription or not
-        if (!node.isCollectionNode() && !node.isMultipleSubscriptionsEnabled()) {
-            NodeSubscription existingSubscription = node.getSubscription(subscriberJID);
-            if (existingSubscription != null) {
-                // User is trying to create another subscription so
-                // return current subscription state
-                existingSubscription.sendSubscriptionState(iq);
-                return;
-            }
-        }
-
-        // Check if subscribing twice to a collection node using same subscription type
-        if (node.isCollectionNode()) {
-            // By default assume that new subscription is of type node
-            boolean isNodeType = true;
-            if (optionsForm != null) {
-                FormField field = optionsForm.getField("pubsub#subscription_type");
-                if (field != null) {
-                    if ("items".equals(field.getValues().get(0))) {
-                        isNodeType = false;
-                    }
-                }
-            }
-            if (nodeAffiliate != null) {
-                for (NodeSubscription subscription : nodeAffiliate.getSubscriptions()) {
-                    if (isNodeType) {
-                        // User is requesting a subscription of type "nodes"
-                        if (NodeSubscription.Type.nodes == subscription.getType()) {
-                            // Cannot have 2 subscriptions of the same type. Return conflict error
-                            sendErrorPacket(iq, PacketError.Condition.conflict, null);
-                            return;
-                        }
-                    }
-                    else if (!node.isMultipleSubscriptionsEnabled()) {
-                        // User is requesting a subscription of type "items" and
-                        // multiple subscriptions is not allowed
-                        if (NodeSubscription.Type.items == subscription.getType()) {
-                            // User is trying to create another subscription so
-                            // return current subscription state
-                            subscription.sendSubscriptionState(iq);
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Create a subscription and an affiliation if the subscriber doesn't have one
-        node.createSubscription(iq, owner, subscriberJID, accessModel.isAuthorizationRequired(),
-                optionsForm);
+        // Attempt to create a subscription and an affiliation, assuming none exist or duplicates are permissible.
+        node.createSubscription(iq, owner, subscriberJID, accessModel.isAuthorizationRequired(), optionsForm);
     }
 
     private void unsubscribeNode(PubSubService service, IQ iq, Element unsubscribeElement) {
@@ -805,38 +790,13 @@ public class PubSubEngine
                 return;
             }
         }
-        NodeSubscription subscription;
-        JID owner = new JID(jidAttribute);
-        
-        if (node.isMultipleSubscriptionsEnabled()) {
-            if (subID == null) {
-                // No subid was specified and the node supports multiple subscriptions
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("subid-required", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
-                return;
-            }
-            else {
-                // Check if the specified subID belongs to an existing node subscription
-                subscription = node.getSubscription(subID);
-                if (subscription == null) {
-                    Element pubsubError = DocumentHelper.createElement(
-                            QName.get("invalid-subid", "http://jabber.org/protocol/pubsub#errors"));
-                    sendErrorPacket(iq, PacketError.Condition.not_acceptable, pubsubError);
-                    return;
-                }
-            }
+
+        final JID subscriberJID = new JID(jidAttribute);
+        final NodeSubscription subscription = resolveSubscriptionOrError(iq, node, subID, subscriberJID);
+        if (subscription == null) {
+            return; // An appropriate error response has already been sent by resolveSubscriptionOrError().
         }
-        else {
-            JID subscriberJID = new JID(jidAttribute);
-            subscription = node.getSubscription(subscriberJID);
-            if (subscription == null) {
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("not-subscribed", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.unexpected_request, pubsubError);
-                return;
-            }
-        }
+
         JID from = iq.getFrom();
         // Check that unsubscriptions to the node are enabled
         if (!node.isSubscriptionEnabled() && !service.isServiceAdmin(from)) {
@@ -858,10 +818,83 @@ public class PubSubEngine
         router.route(IQ.createResultIQ(iq));
     }
 
+    /**
+     * Resolves a subscription on the specified node for the provided subscriber.
+     *
+     * If a subscription ID is provided, this method verifies that it identifies an existing subscription on the node
+     * and returns that subscription. Otherwise, the subscription is inferred from the subscriber JID:
+     *
+     * <ul>
+     *   <li>If the JID has exactly one subscription on the node, that subscription is returned.</li>
+     *   <li>If the JID has no subscriptions, a {@code not-subscribed} PubSub error is returned.</li>
+     *   <li>If the JID has multiple subscriptions, a {@code subid-required} PubSub error is returned.</li>
+     * </ul>
+     *
+     * When a provided subscription ID does not correspond to an existing subscription, an {@code invalid-subid} PubSub
+     * error is returned.
+     *
+     * @param iq the IQ stanza to which any error response should be sent.
+     * @param node the node on which the subscription is to be resolved.
+     * @param subID the subscription ID to resolve, or {@code null} to resolve the subscription based on the subscriber JID.
+     * @param subscriberJID the JID of the subscriber
+     * @return the resolved subscription, or {@code null} if no unique subscription could be resolved. In that case,
+     *         an appropriate error response has already been sent.
+     */
+    private NodeSubscription resolveSubscriptionOrError(@Nonnull final IQ iq, @Nonnull final Node node, @Nullable final String subID, @Nonnull final JID subscriberJID)
+    {
+        NodeSubscription subscription;
+        if (subID != null)
+        {
+            // Check if the specified subID belongs to an existing node subscription
+            subscription = node.getSubscription(subID);
+            if (subscription == null) {
+                Element pubsubError = DocumentHelper.createElement(QName.get("invalid-subid", "http://jabber.org/protocol/pubsub#errors"));
+                sendErrorPacket(iq, PacketError.Condition.not_acceptable, pubsubError);
+                return null;
+            }
+
+            // XEP-0060 6.2.3.5 SubID does not match JID
+            if (!subscription.getJID().equals(subscriberJID)) {
+                Element pubsubError = DocumentHelper.createElement(QName.get("invalid-subid", "http://jabber.org/protocol/pubsub#errors"));
+                sendErrorPacket(iq, PacketError.Condition.not_acceptable, pubsubError);
+                return null;
+            }
+        }
+        else
+        {
+            final Collection<NodeSubscription> subscriptionsByJID = node.getSubscriptionsByJID(subscriberJID);
+            switch (subscriptionsByJID.size()) {
+                case 0:
+                    sendErrorPacket(iq, PacketError.Condition.unexpected_request, DocumentHelper.createElement(QName.get("not-subscribed", "http://jabber.org/protocol/pubsub#errors")));
+                    return null;
+
+                case 1:
+                    // Only one subscription exists for the specified JID, so use that one.
+                    subscription = subscriptionsByJID.iterator().next();
+                    break;
+
+                default:
+                    // No subid was specified, and the node has multiple subscriptions.
+                    sendErrorPacket(iq, PacketError.Condition.bad_request, DocumentHelper.createElement(QName.get("subid-required", "http://jabber.org/protocol/pubsub#errors")));
+                    return null;
+            }
+        }
+        return subscription;
+    }
+
     private void getSubscriptionConfiguration(PubSubService service, IQ iq,
                                               Element childElement, Element optionsElement) {
         String nodeID = optionsElement.attributeValue("node");
         String subID = optionsElement.attributeValue("subid");
+        String jidAttribute = optionsElement.attributeValue("jid");
+
+        if (jidAttribute == null) {
+            // No JID was specified so return an error indicating that jid is required
+            Element pubsubError = DocumentHelper.createElement(
+                QName.get("jid-required", "http://jabber.org/protocol/pubsub#errors"));
+            sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
+            return;
+        }
         Node node;
         if (nodeID == null) {
             if (service.isCollectionNodesSupported()) {
@@ -885,44 +918,11 @@ public class PubSubEngine
                 return;
             }
         }
-        NodeSubscription subscription;
-        if (node.isMultipleSubscriptionsEnabled()) {
-            if (subID == null) {
-                // No subid was specified and the node supports multiple subscriptions
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("subid-required", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
-                return;
-            }
-            else {
-                // Check if the specified subID belongs to an existing node subscription
-                subscription = node.getSubscription(subID);
-                if (subscription == null) {
-                    Element pubsubError = DocumentHelper.createElement(
-                            QName.get("invalid-subid", "http://jabber.org/protocol/pubsub#errors"));
-                    sendErrorPacket(iq, PacketError.Condition.not_acceptable, pubsubError);
-                    return;
-                }
-            }
-        }
-        else {
-            // Check if the specified JID has a subscription with the node
-            String jidAttribute = optionsElement.attributeValue("jid");
-            if (jidAttribute == null) {
-                // No JID was specified so return an error indicating that jid is required
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("jid-required", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
-                return;
-            }
-            JID subscriberJID = new JID(jidAttribute);
-            subscription = node.getSubscription(subscriberJID);
-            if (subscription == null) {
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("not-subscribed", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.unexpected_request, pubsubError);
-                return;
-            }
+
+        final JID subscriberJID = new JID(jidAttribute);
+        final NodeSubscription subscription = resolveSubscriptionOrError(iq, node, subID, subscriberJID);
+        if (subscription == null) {
+            return; // An appropriate error response has already been sent by resolveSubscriptionOrError().
         }
 
         // A subscription was found so check if the user is allowed to get the subscription options
@@ -944,6 +944,15 @@ public class PubSubEngine
     private void configureSubscription(PubSubService service, IQ iq, Element optionsElement) {
         String nodeID = optionsElement.attributeValue("node");
         String subID = optionsElement.attributeValue("subid");
+        String jidAttribute = optionsElement.attributeValue("jid");
+
+        if (jidAttribute == null) {
+            // No JID was specified so return an error indicating that jid is required
+            Element pubsubError = DocumentHelper.createElement(
+                QName.get("jid-required", "http://jabber.org/protocol/pubsub#errors"));
+            sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
+            return;
+        }
         Node node;
         if (nodeID == null) {
             if (service.isCollectionNodesSupported()) {
@@ -967,44 +976,11 @@ public class PubSubEngine
                 return;
             }
         }
-        NodeSubscription subscription;
-        if (node.isMultipleSubscriptionsEnabled()) {
-            if (subID == null) {
-                // No subid was specified and the node supports multiple subscriptions
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("subid-required", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
-                return;
-            }
-            else {
-                // Check if the specified subID belongs to an existing node subscription
-                subscription = node.getSubscription(subID);
-                if (subscription == null) {
-                    Element pubsubError = DocumentHelper.createElement(
-                            QName.get("invalid-subid", "http://jabber.org/protocol/pubsub#errors"));
-                    sendErrorPacket(iq, PacketError.Condition.not_acceptable, pubsubError);
-                    return;
-                }
-            }
-        }
-        else {
-            // Check if the specified JID has a subscription with the node
-            String jidAttribute = optionsElement.attributeValue("jid");
-            if (jidAttribute == null) {
-                // No JID was specified so return an error indicating that jid is required
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("jid-required", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
-                return;
-            }
-            JID subscriberJID = new JID(jidAttribute);
-            subscription = node.getSubscription(subscriberJID);
-            if (subscription == null) {
-                Element pubsubError = DocumentHelper.createElement(
-                        QName.get("not-subscribed", "http://jabber.org/protocol/pubsub#errors"));
-                sendErrorPacket(iq, PacketError.Condition.unexpected_request, pubsubError);
-                return;
-            }
+
+        final JID subscriberJID = new JID(jidAttribute);
+        final NodeSubscription subscription = resolveSubscriptionOrError(iq, node, subID, subscriberJID);
+        if (subscription == null) {
+            return; // An appropriate error response has already been sent by resolveSubscriptionOrError().
         }
 
         // A subscription was found so check if the user is allowed to submits
@@ -1062,7 +1038,7 @@ public class PubSubEngine
             }
             subElement.addAttribute("jid", subscription.getJID().toString());
             subElement.addAttribute("subscription", subscription.getState().name());
-            if (node.isMultipleSubscriptionsEnabled()) {
+            if (node.isMultipleSubscriptionsEnabled() || node.isCollectionNode()) {
                 subElement.addAttribute("subid", subscription.getID());
             }
         }
@@ -1160,8 +1136,7 @@ public class PubSubEngine
         NodeSubscription subscription = null;
         if (node.isMultipleSubscriptionsEnabled() && (node.getSubscriptions(owner).size() > 1)) {
             if (subID == null) {
-                // No subid was specified and the node supports multiple subscriptions and the user
-                // has multiple subscriptions
+                // No subid was specified and the node supports multiple subscriptions and the user has multiple subscriptions
                 Element pubsubError = DocumentHelper.createElement(
                         QName.get("subid-required", "http://jabber.org/protocol/pubsub#errors"));
                 sendErrorPacket(iq, PacketError.Condition.bad_request, pubsubError);
@@ -1199,7 +1174,7 @@ public class PubSubEngine
             }
             catch (NumberFormatException e) {
                 // There was an error parsing the number so assume that all items were requested
-                Log.warn("Assuming that all items were requested", e);
+                Log.debug("Error parsing 'max_items' from request. Assuming that all items were requested. Offending stanza: {}", iq, e);
                 max_items = null;
             }
         }
@@ -1208,7 +1183,7 @@ public class PubSubEngine
             items = new ArrayList<>(leafNode.getPublishedItems(recentItems));
         }
         else {
-            List requestedItems = itemsElement.elements("item");
+            List<Element> requestedItems = itemsElement.elements("item");
             if (requestedItems.isEmpty()) {
                 // Get all the active items that were published to the node
                 items = new ArrayList<>(leafNode.getPublishedItems());
@@ -1216,8 +1191,8 @@ public class PubSubEngine
             else {
                 items = new ArrayList<>();
                 // Get the items as requested by the user
-                for (Iterator it = requestedItems.iterator(); it.hasNext();) {
-                    Element element = (Element) it.next();
+                for (Iterator<Element> it = requestedItems.iterator(); it.hasNext();) {
+                    Element element = it.next();
                     String itemID = element.attributeValue("id");
                     PublishedItem item = leafNode.getPublishedItem(itemID);
                     if (item != null) {
@@ -1589,19 +1564,19 @@ public class PubSubEngine
             sendErrorPacket(iq, PacketError.Condition.forbidden, null);
             return;
         }
-        if (!((LeafNode) node).isPersistPublishedItems()) {
-            // Node does not persist items. Return feature-not-implemented error
-            Element pubsubError = DocumentHelper.createElement(
-                    QName.get("unsupported", "http://jabber.org/protocol/pubsub#errors"));
-            pubsubError.addAttribute("feature", "persistent-items");
-            sendErrorPacket(iq, PacketError.Condition.feature_not_implemented, pubsubError);
-            return;
-        }
         if (node.isCollectionNode()) {
             // Node is a collection node. Return feature-not-implemented error
             Element pubsubError = DocumentHelper.createElement(
                     QName.get("unsupported", "http://jabber.org/protocol/pubsub#errors"));
             pubsubError.addAttribute("feature", "purge-nodes");
+            sendErrorPacket(iq, PacketError.Condition.feature_not_implemented, pubsubError);
+            return;
+        }
+        if (!((LeafNode) node).isPersistPublishedItems()) {
+            // Node does not persist items. Return feature-not-implemented error
+            Element pubsubError = DocumentHelper.createElement(
+                    QName.get("unsupported", "http://jabber.org/protocol/pubsub#errors"));
+            pubsubError.addAttribute("feature", "persistent-items");
             sendErrorPacket(iq, PacketError.Condition.feature_not_implemented, pubsubError);
             return;
         }
@@ -1653,28 +1628,47 @@ public class PubSubEngine
             sendErrorPacket(iq, PacketError.Condition.forbidden, null);
             return;
         }
+        for (Iterator<Element> it = entitiesElement.elementIterator("subscription"); it.hasNext();) {
+            Element entity = it.next();
+            final String jidAttributeValue = entity.attributeValue("jid");
+            final String subidAttributeValue = entity.attributeValue("subid");
+            if (jidAttributeValue == null) {
+                sendErrorPacket(iq, PacketError.Condition.bad_request, null);
+                return;
+            }
+            if (node.isMultipleSubscriptionsEnabled() && subidAttributeValue == null) {
+                // XEP-0060: "If subscription identifiers are supported by the service, the 'subid' attribute MUST be present as well."
+                sendErrorPacket(iq, PacketError.Condition.bad_request, null);
+                return;
+            }
+            if (subidAttributeValue == null && node.getSubscriptionsByJID(new JID(jidAttributeValue)).size() > 1) {
+                // Unable to differentiate between multiple subscriptions with the same JID.
+                sendErrorPacket(iq, PacketError.Condition.conflict, null);
+                return;
+            }
+        }
 
         IQ reply = IQ.createResultIQ(iq);
 
         // Process modifications or creations of affiliations and subscriptions.
-        for (Iterator it = entitiesElement.elementIterator("subscription"); it.hasNext();) {
-            Element entity = (Element) it.next();
+        for (Iterator<Element> it = entitiesElement.elementIterator("subscription"); it.hasNext();) {
+            Element entity = it.next();
             JID subscriber = new JID(entity.attributeValue("jid"));
             // TODO Assumed that the owner of the subscription is the bare JID of the subscription JID. Waiting StPeter answer for explicit field.
             JID owner = subscriber.asBareJID();
             String subStatus = entity.attributeValue("subscription");
             String subID = entity.attributeValue("subid");
             // Process subscriptions changes
+
             // Get current subscription (if any)
-            NodeSubscription subscription = null;
-            if (node.isMultipleSubscriptionsEnabled()) {
-                if (subID != null) {
-                    subscription = node.getSubscription(subID);
-                }
-            }
-            else {
+            NodeSubscription subscription;
+            if (subID != null) {
+                subscription = node.getSubscription(subID);
+            } else {
                 subscription = node.getSubscription(subscriber);
             }
+
+            // Apply changes
             if ("none".equals(subStatus) && subscription != null) {
                 // Owner is cancelling an existing subscription
                 node.cancelSubscription(subscription);
@@ -1741,8 +1735,8 @@ public class PubSubEngine
         Collection<JID> invalidAffiliates = new ArrayList<>();
 
         // Process modifications or creations of affiliations
-        for (Iterator it = entitiesElement.elementIterator("affiliation"); it.hasNext();) {
-            Element affiliation = (Element) it.next();
+        for (Iterator<Element> it = entitiesElement.elementIterator("affiliation"); it.hasNext();) {
+            Element affiliation = it.next();
             JID owner = new JID(affiliation.attributeValue("jid"));
             String newAffiliation = affiliation.attributeValue("affiliation");
             // Get current affiliation of this user (if any)
@@ -1905,15 +1899,15 @@ public class PubSubEngine
                         configureElement.asXML());
             }
             // Check if a list of groups was specified
-            List groups = configureElement.elements("group");
+            List<Element> groups = configureElement.elements("group");
             if (!groups.isEmpty()) {
                 // Add the field that will contain the specified groups
                 formField = completedForm.addField();
                 formField.setType(FormField.Type.list_multi);
                 formField.setVariable("pubsub#roster_groups_allowed");
                 // Add each group as a value of the groups field
-                for (Iterator it = groups.iterator(); it.hasNext();) {
-                    formField.addValue(((Element) it.next()).getTextTrim());
+                for (Iterator<Element> it = groups.iterator(); it.hasNext();) {
+                    formField.addValue(it.next().getTextTrim());
                 }
             }
         }

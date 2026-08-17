@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,22 +16,20 @@
 
 package org.jivesoftware.openfire.http;
 
-import org.apache.jasper.servlet.JasperInitializer;
 import org.apache.tomcat.InstanceManager;
 import org.apache.tomcat.SimpleInstanceManager;
+import org.eclipse.jetty.ee8.nested.ContextHandler;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
-import org.eclipse.jetty.plus.annotation.ContainerInitializer;
 import org.eclipse.jetty.server.*;
-import org.eclipse.jetty.server.handler.HandlerCollection;
-import org.eclipse.jetty.server.handler.HandlerList;
+import org.eclipse.jetty.server.Handler.Sequence;
 import org.eclipse.jetty.server.handler.gzip.GzipHandler;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
+import org.eclipse.jetty.ee8.servlet.ServletContextHandler;
+import org.eclipse.jetty.ee8.servlet.ServletHolder;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.eclipse.jetty.webapp.WebAppContext;
-import org.eclipse.jetty.websocket.server.config.JettyWebSocketServletContainerInitializer;
+import org.eclipse.jetty.ee8.webapp.WebAppContext;
+import org.eclipse.jetty.ee8.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.jivesoftware.openfire.Connection;
 import org.jivesoftware.openfire.ConnectionManager;
 import org.jivesoftware.openfire.JMXManager;
@@ -43,9 +41,11 @@ import org.jivesoftware.openfire.spi.ConnectionType;
 import org.jivesoftware.openfire.spi.EncryptionArtifactFactory;
 import org.jivesoftware.openfire.websocket.OpenfireWebSocketServlet;
 import org.jivesoftware.util.*;
+import org.jivesoftware.util.jetty.TrustedForwardedRequestCustomizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.servlet.DispatcherType;
 import java.io.File;
 import java.time.Duration;
@@ -96,6 +96,17 @@ public final class HttpBindManager implements CertificateEventListener {
         .setDynamic(true)
         .setDefaultValue(7443)
         .addListener(HttpBindManager::restart)
+        .build();
+
+    /**
+     * Duration of the maximum duration of gracefully stopping the embedded webserver that is hosting the BOSH endpoint (among others).
+     */
+    public static final SystemProperty<Duration> HTTP_BIND_STOP_TIMEOUT = SystemProperty.Builder.ofType(Duration.class)
+        .setKey("httpbind.stop-timeout")
+        .setChronoUnit(ChronoUnit.MILLIS)
+        .setDynamic(true)
+        .setDefaultValue(Duration.ofSeconds(5))
+        .addListener(HttpBindManager::updateStopTimeout) // No need to restart the server, as this setting applies to stopping the server only.
         .build();
 
     /**
@@ -165,6 +176,16 @@ public final class HttpBindManager implements CertificateEventListener {
         .setDefaultValue(false)
         .build();
 
+
+    /**
+     * The HTTP header name for 'forwarded' (per RFC 7239).
+     */
+    public static final SystemProperty<String> HTTP_BIND_FORWARDED_HEADER = SystemProperty.Builder.ofType(String.class)
+        .setKey("httpbind.forwarded.header")
+        .setDynamic(false) // TODO This can easily be made dynamic with <tt>.addListener(HttpBindManager.getInstance()::restartServer)</tt>. Existing implementation was not dynamic. Should it?
+        .setDefaultValue(HttpHeader.FORWARDED.toString())
+        .build();
+
     /**
      * The HTTP header name for 'forwarded for'
      */
@@ -200,6 +221,27 @@ public final class HttpBindManager implements CertificateEventListener {
         .setDynamic(false) // TODO This can easily be made dynamic with <tt>.addListener(HttpBindManager.getInstance()::restartServer)</tt>. Existing implementation was not dynamic. Should it?
         .setDefaultValue(null)
         .build();
+
+    /**
+     * Defines the set of trusted reverse proxies.
+     *
+     * When this property is configured (non-empty), 'Forwarded' and 'X-Forwarded-*' HTTP headers are only honored if
+     * the direct peer (the socket-level remote address) of the request matches one of the configured trusted proxies.
+     * If the peer is not trusted, these headers are ignored and the request's original remote address is used instead.
+     *
+     * This setting helps prevent spoofing of client IP addresses via forged forwarding headers and should be configured
+     * when Openfire is deployed behind one or more reverse proxies.
+     *
+     * Values can be individual IP addresses (IPv4 or IPv6) as well as IP ranges (for example, in CIDR notation).
+     *
+     * @see org.jivesoftware.openfire.container.AdminConsolePlugin#ADMIN_CONSOLE_FORWARDED_TRUSTED_PROXIES for a similar configuration in the admin console.
+     */
+    public static final SystemProperty<Set<String>> HTTP_BIND_FORWARDED_TRUSTED_PROXIES = SystemProperty.Builder.ofType(Set.class)
+        .setKey("httpbind.forwarded.trusted.proxies")
+        .setDynamic(false)  // TODO This can easily be made dynamic with <tt>.addListener(HttpBindManager.getInstance()::restartServer)</tt>. Existing implementation was not dynamic. Should it?
+        .setDefaultValue(new HashSet<>())
+        .setSorted(true)
+        .buildSet(String.class);
 
     // http binding CORS default properties
 
@@ -306,14 +348,14 @@ public final class HttpBindManager implements CertificateEventListener {
      * This collection should be regarded as immutable. When handlers are to be added/removed dynamically, this should
      * occur in {@link #extensionHandlers}, to which a reference is stored in this list by the constructor of this class.
      */
-    private final HandlerList handlerList = new HandlerList();
+    private final Sequence handlerList = new Sequence();
 
     /**
      * Contains all Jetty handlers that are added as an extension.
      *
      * This collection is mutable. Handlers can be added and removed at runtime.
      */
-    private final HandlerCollection extensionHandlers = new HandlerCollection( true );
+    private final Sequence extensionHandlers = new Sequence();
 
     /**
      * A task that, periodically, updates the 'last modified' date of all files in the Jetty 'tmp' directories. This
@@ -343,7 +385,7 @@ public final class HttpBindManager implements CertificateEventListener {
 
         // When everything else fails, use the static content handler. This one should be last, as it is mapping to the root context.
         // This means that it will catch everything and prevent the invocation of later handlers.
-        final Handler staticContentHandler = createStaticContentHandler();
+        final ServletContextHandler staticContentHandler = createStaticContentHandler();
         if ( staticContentHandler != null )
         {
             this.handlerList.addHandler( staticContentHandler );
@@ -365,6 +407,9 @@ public final class HttpBindManager implements CertificateEventListener {
             httpBindServer.addBean(jmx.getContainer());
         }
 
+        final Duration stopTimeout = HTTP_BIND_STOP_TIMEOUT.getValue();
+        httpBindServer.setStopTimeout(stopTimeout == null || stopTimeout.isNegative() ? 0 : stopTimeout.toMillis());
+
         final Connector httpConnector = createConnector( httpBindServer );
         final Connector httpsConnector = createSSLConnector( httpBindServer);
 
@@ -385,9 +430,9 @@ public final class HttpBindManager implements CertificateEventListener {
             httpBindServer.start();
 
             if (handlerList.getHandlers() != null) {
-                Arrays.stream(handlerList.getHandlers()).forEach(handler -> {
+                Arrays.stream(handlerList.getHandlers().toArray()).forEach(handler  -> {
                     try {
-                        handler.start();
+                        ((Handler)handler).start();
                     } catch (Exception e) {
                         Log.warn("An exception occurred while trying to start handler: {}", handler, e);
                     }
@@ -396,9 +441,9 @@ public final class HttpBindManager implements CertificateEventListener {
             handlerList.start();
 
             if ( extensionHandlers.getHandlers() != null ) {
-                Arrays.stream(extensionHandlers.getHandlers()).forEach(handler -> {
+                Arrays.stream(extensionHandlers.getHandlers().toArray()).forEach(handler  -> {
                     try {
-                        handler.start();
+                        ((Handler)handler).start();
                     } catch (Exception e) {
                         Log.warn("An exception occurred while trying to start extension handler: {}", handler, e);
                     }
@@ -432,9 +477,9 @@ public final class HttpBindManager implements CertificateEventListener {
         if (httpBindServer != null) {
             try {
                 if ( extensionHandlers.getHandlers() != null ) {
-                    Arrays.stream(extensionHandlers.getHandlers()).forEach(handler -> {
+                    Arrays.stream(extensionHandlers.getHandlers().toArray()).forEach(handler  -> {
                         try {
-                            handler.stop();
+                            ((Handler)handler).stop();
                         } catch (Exception e) {
                             Log.warn("An exception occurred while trying to stop extension handler: {}", handler, e);
                         }
@@ -443,9 +488,9 @@ public final class HttpBindManager implements CertificateEventListener {
                 extensionHandlers.stop();
 
                 if ( handlerList.getHandlers() != null ) {
-                    Arrays.stream(handlerList.getHandlers()).forEach(handler -> {
+                    Arrays.stream(handlerList.getHandlers().toArray()).forEach(handler-> {
                         try {
-                            handler.stop();
+                            ((Handler)handler).stop();
                         } catch (Exception e) {
                             Log.warn("An exception occurred while trying to stop handler: {}", handler, e);
                         }
@@ -527,6 +572,11 @@ public final class HttpBindManager implements CertificateEventListener {
         // Refer to http://eclipse.org/jetty/documentation/current/configuring-connectors.html
         if (HTTP_BIND_FORWARDED.getValue()) {
             ForwardedRequestCustomizer customizer = new ForwardedRequestCustomizer();
+            // default: "Forwarded"
+            String forwardedHeader = HTTP_BIND_FORWARDED_HEADER.getValue();
+            if (forwardedHeader != null) {
+                customizer.setForwardedHeader(forwardedHeader);
+            }
             // default: "X-Forwarded-For"
             String forwardedForHeader = HTTP_BIND_FORWARDED_FOR.getValue();
             if (forwardedForHeader != null) {
@@ -548,7 +598,14 @@ public final class HttpBindManager implements CertificateEventListener {
                 customizer.setHostHeader(hostName);
             }
 
-            httpConfig.addCustomizer(customizer);
+            final HttpConfiguration.Customizer possiblyWrappedCustomizer;
+            final Set<String> trustedProxies = HTTP_BIND_FORWARDED_TRUSTED_PROXIES.getValue();
+            if (trustedProxies != null && !trustedProxies.isEmpty()) {
+                possiblyWrappedCustomizer = new TrustedForwardedRequestCustomizer(customizer, trustedProxies);
+            } else {
+                possiblyWrappedCustomizer = customizer;
+            }
+            httpConfig.addCustomizer(possiblyWrappedCustomizer);
         }
         httpConfig.setRequestHeaderSize(HTTP_BIND_REQUEST_HEADER_SIZE.getValue());
    }
@@ -557,7 +614,7 @@ public final class HttpBindManager implements CertificateEventListener {
         String interfaceName = JiveGlobals.getXMLProperty("network.interface");
         String bindInterface = null;
         if (interfaceName != null) {
-            if (interfaceName.trim().length() > 0) {
+            if (!interfaceName.trim().isEmpty()) {
                 bindInterface = interfaceName;
             }
         }
@@ -643,10 +700,6 @@ public final class HttpBindManager implements CertificateEventListener {
         return "https://" + XMPPServer.getInstance().getServerInfo().getHostname() + ":" + HTTP_BIND_SECURE_PORT.getValue() + "/http-bind/";
     }
 
-    public String getJavaScriptUrl() {
-        return "http://" + XMPPServer.getInstance().getServerInfo().getHostname() + ":" + HTTP_BIND_PORT.getValue() + "/scripts/";
-    }
-
     public boolean isAllOriginsAllowed() {
         return HTTP_BIND_ALLOWED_ORIGINS.getValue().contains(HTTP_BIND_CORS_ALLOW_ORIGIN_ALL);
     }
@@ -664,15 +717,11 @@ public final class HttpBindManager implements CertificateEventListener {
      *
      * @return A Jetty context handler (never null).
      */
-    protected Handler createBoshHandler()
+    protected ServletContextHandler createBoshHandler()
     {
         final int options = ServletContextHandler.SESSIONS;
         final ServletContextHandler context = new ServletContextHandler( null, "/http-bind", options );
 
-        // Ensure the JSP engine is initialized correctly (in order to be able to cope with Tomcat/Jasper precompiled JSPs).
-        final List<ContainerInitializer> initializers = new ArrayList<>();
-        initializers.add( new ContainerInitializer( new JasperInitializer(), null ) );
-        context.setAttribute( "org.eclipse.jetty.containerInitializers", initializers );
         context.setAttribute( InstanceManager.class.getName(), new SimpleInstanceManager() );
 
         // Generic configuration of the context.
@@ -704,7 +753,7 @@ public final class HttpBindManager implements CertificateEventListener {
      *
      * @return A Jetty context handler (never null).
      */
-    protected Handler createWebsocketHandler()
+    protected ServletContextHandler createWebsocketHandler()
     {
         final ServletContextHandler context = new ServletContextHandler( null, "/ws", ServletContextHandler.SESSIONS );
         context.setAllowNullPathInfo(true);
@@ -734,7 +783,7 @@ public final class HttpBindManager implements CertificateEventListener {
      *
      * @return A Jetty context handler, or null when the static content could not be accessed.
      */
-    protected Handler createStaticContentHandler()
+    protected ServletContextHandler createStaticContentHandler()
     {
         final File spankDirectory = new File( JiveGlobals.getHomePath() + File.separator + "resources" + File.separator + "spank" );
         if ( spankDirectory.exists() )
@@ -760,12 +809,39 @@ public final class HttpBindManager implements CertificateEventListener {
     }
 
     /**
+     * Adds a Jetty handler to be added to the embedded web server that is used to expose Openfire's public
+     * web-bindings (eg: BOSH / HTTP-bind and websocket).
+     *
+     * @param handler The handler (cannot be null).
+     */
+    public void addJettyHandler(@Nonnull final ContextHandler handler)
+    {
+        if ( handler == null )
+        {
+            throw new IllegalArgumentException( "Argument 'handler' cannot be null." );
+        }
+
+        addJettyHandler(handler.get());
+    }
+
+    /**
+     * Removes a Jetty handler to be added to the embedded web server that is used to expose Openfire's public
+     * web-bindings (eg: BOSH / HTTP-bind and websocket).
+     *
+     * @param handler The handler (should not be null).
+     */
+    public void removeJettyHandler(@Nonnull final ContextHandler handler)
+    {
+        removeJettyHandler(handler.get());
+    }
+
+    /**
      * Adds a Jetty handler to be added to the embedded web server that is used to expose BOSH (HTTP-bind)
      * functionality.
      *
      * @param handler The handler (cannot be null).
      */
-    public void addJettyHandler( Handler handler )
+    public void addJettyHandler(@Nonnull final Handler handler )
     {
         if ( handler == null )
         {
@@ -796,7 +872,7 @@ public final class HttpBindManager implements CertificateEventListener {
      *
      * @param handler The handler (should not be null).
      */
-    public void removeJettyHandler( Handler handler )
+    public void removeJettyHandler(@Nonnull final Handler handler )
     {
         extensionHandlers.removeHandler( handler );
         if ( handler.isStarted() )
@@ -872,5 +948,22 @@ public final class HttpBindManager implements CertificateEventListener {
     public void storeContentChanged( CertificateStore store )
     {
         restartServer();
+    }
+
+    /**
+     * Static reference for {@link #setStopTimeout(Duration)} that can be used as a listener of a
+     * {@link SystemProperty}.
+     */
+    public static void updateStopTimeout(final Duration stopTimeout) {
+        if (getInstance() != null) {
+            getInstance().setStopTimeout(stopTimeout);
+        }
+    }
+
+    public void setStopTimeout(final Duration stopTimeout)
+    {
+        if (httpBindServer != null) {
+            httpBindServer.setStopTimeout(stopTimeout == null || stopTimeout.isNegative() ? 0 : stopTimeout.toMillis());
+        }
     }
 }

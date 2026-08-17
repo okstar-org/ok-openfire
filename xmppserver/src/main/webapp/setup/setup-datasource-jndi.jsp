@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2017-2022 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -15,16 +15,16 @@
   - limitations under the License.
 --%>
 <%@ page contentType="text/html; charset=UTF-8" %>
-<%@ page import="org.jivesoftware.database.DbConnectionManager,
+<%@ page import="java.util.*,
+                 javax.naming.Binding,
+                 javax.naming.Context,
+                 javax.naming.InitialContext,
+                 javax.naming.NamingEnumeration,
+                 org.jivesoftware.database.DbConnectionManager,
                  org.jivesoftware.database.JNDIDataSourceProvider,
                  org.jivesoftware.openfire.XMPPServer,
-                 javax.naming.Binding,
-                 javax.naming.Context" %>
-<%@ page import="javax.naming.InitialContext"%>
-<%@ page import="javax.naming.NamingEnumeration"%>
-<%@ page import="java.util.HashMap"%>
-<%@ page import="java.util.Map"%>
-<%@ page import="org.jivesoftware.util.*" %>
+                 org.jivesoftware.util.*"
+%>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/functions" prefix="fn" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -87,7 +87,7 @@
             lookupName = jndiNameMode;
         }
         // if no errors, continue
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             // Set the JNDI connection class property in the jive props file
             JiveGlobals.setProperty("connectionProvider.className",
                     "org.jivesoftware.database.JNDIDataSourceProvider");
@@ -156,7 +156,7 @@
 <c:choose>
     <c:when test="${isLookupNames}">
         <label for="jndiName">fmt:message key="setup.datasource.jndi.name" /></label>
-        <input type="text" name="jndiName" id="jndiName" size="30" maxlength="100" value="${not empty jndiName ? fn:escapeXml(jndiName) : ''}">
+        <input type="text" name="jndiName" id="jndiName" size="30" maxlength="100" value="${fn:escapeXml(jndiName)}" autofocus>
     </c:when>
     <c:otherwise>
 
@@ -164,9 +164,9 @@
     <tr>
         <td><input type="radio" name="jndiNameMode" value="custom"></td>
         <td>
-            <span onclick="document.jndiform.jndiName.focus();"><label for="jndiName"><fmt:message key="setup.datasource.jndi.custom" /></label></span>
+            <label for="jndiName"><fmt:message key="setup.datasource.jndi.custom" /></label>
             &nbsp;
-            <input type="text" name="jndiName" id="jndiName" size="30" maxlength="100" value="${not empty jndiName ? fn:escapeXml(jndiName) : ''}" onfocus="this.form.jndiNameMode[0].checked=true;">
+            <input type="text" name="jndiName" id="jndiName" size="30" maxlength="100" value="${fn:escapeXml(jndiName)}">
             <c:if test="${not empty errors['jndiName']}">
                 <span class="jive-error-text"><br>
                     <fmt:message key="setup.datasource.jndi.valid_name" />
@@ -201,12 +201,6 @@
 </div>
 
 </form>
-
-<script>
-<!--
-document.jndiform.jndiName.focus();
-//-->
-</script>
 
 </body>
 </html>

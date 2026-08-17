@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2016-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2016-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -94,7 +94,6 @@ public class DefaultConnectionProvider implements ConnectionProvider {
 
     @Override
     public void start() {
-
         try {
             Class.forName(driver);
         } catch (final ClassNotFoundException e) {
@@ -104,10 +103,10 @@ public class DefaultConnectionProvider implements ConnectionProvider {
         final ConnectionFactory connectionFactory = new DriverManagerConnectionFactory(serverURL, username, password);
         final PoolableConnectionFactory poolableConnectionFactory = new PoolableConnectionFactory(connectionFactory, null);
         poolableConnectionFactory.setValidationQuery(testSQL);
-        poolableConnectionFactory.setValidationQueryTimeout((int)testTimeout.toSeconds());
-        poolableConnectionFactory.setMaxConnLifetimeMillis((long) connectionTimeout.toMillis());
+        poolableConnectionFactory.setValidationQueryTimeout(testTimeout);
+        poolableConnectionFactory.setMaxConn(connectionTimeout);
 
-        final GenericObjectPoolConfig poolConfig = new GenericObjectPoolConfig();
+        final GenericObjectPoolConfig<PoolableConnection> poolConfig = new GenericObjectPoolConfig<>();
         poolConfig.setTestOnBorrow(testBeforeUse);
         poolConfig.setTestOnReturn(testAfterUse);
         poolConfig.setMinIdle(minConnections);
@@ -116,9 +115,9 @@ public class DefaultConnectionProvider implements ConnectionProvider {
             poolConfig.setMaxIdle(minConnections);
         }
         poolConfig.setMaxTotal(maxConnections);
-        poolConfig.setTimeBetweenEvictionRunsMillis(timeBetweenEvictionRuns.toMillis());
-        poolConfig.setSoftMinEvictableIdleTimeMillis(minIdleTime.toMillis());
-        poolConfig.setMaxWaitMillis(maxWaitTime.toMillis());
+        poolConfig.setTimeBetweenEvictionRuns(timeBetweenEvictionRuns);
+        poolConfig.setSoftMinEvictableIdleDuration(minIdleTime);
+        poolConfig.setMaxWait(maxWaitTime);
         connectionPool = new GenericObjectPool<>(poolableConnectionFactory, poolConfig);
         poolableConnectionFactory.setPool(connectionPool);
         dataSource = new PoolingDataSource<>(connectionPool);
@@ -131,7 +130,9 @@ public class DefaultConnectionProvider implements ConnectionProvider {
     @Override
     public void destroy() {
         try {
-            dataSource.close();
+            if (dataSource != null) {
+                dataSource.close();
+            }
         } catch (final Exception e) {
             Log.error("Unable to close the data source", e);
         }
@@ -181,7 +182,7 @@ public class DefaultConnectionProvider implements ConnectionProvider {
      * Returns the username used to connect to the database. In some cases,
      * a username is not needed so this method will return null.
      *
-     * @return the username used to connect to the datbase.
+     * @return the username used to connect to the database.
      */
     public String getUsername() {
         return username;
@@ -297,12 +298,20 @@ public class DefaultConnectionProvider implements ConnectionProvider {
         return testTimeout;
     }
 
+    /**
+     * @deprecated Replaced by {@link #getDurationBetweenEvictionRuns()}
+     */
+    @Deprecated
     public Duration getTimeBetweenEvictionRunsMillis() {
-        return Duration.ofMillis(connectionPool.getTimeBetweenEvictionRunsMillis());
+        return getDurationBetweenEvictionRuns();
+    }
+
+    public Duration getDurationBetweenEvictionRuns() {
+        return connectionPool.getDurationBetweenEvictionRuns();
     }
 
     public Duration getMinIdleTime() {
-        return Duration.ofMillis(connectionPool.getSoftMinEvictableIdleTimeMillis());
+        return connectionPool.getSoftMinEvictableIdleDuration();
     }
 
     public int getActiveConnections() {
@@ -322,15 +331,15 @@ public class DefaultConnectionProvider implements ConnectionProvider {
     }
 
     public Duration getMaxWaitTime() {
-        return Duration.ofMillis(connectionPool.getMaxWaitMillis());
+        return connectionPool.getMaxWaitDuration();
     }
 
     public Duration getMeanBorrowWaitTime() {
-        return Duration.ofMillis(connectionPool.getMeanBorrowWaitTimeMillis());
+        return connectionPool.getMeanBorrowWaitDuration();
     }
 
     public Duration getMaxBorrowWaitTime() {
-        return Duration.ofMillis(connectionPool.getMaxBorrowWaitTimeMillis());
+        return connectionPool.getMaxBorrowWaitDuration();
     }
 
     /**
@@ -408,7 +417,7 @@ public class DefaultConnectionProvider implements ConnectionProvider {
         maxWaitTime = Duration.ofMillis(JiveGlobals.getXMLProperty("database.defaultProvider.maxWaitTime", (int) Duration.ofMillis(500).toMillis()));
 
         // See if we should use Unicode under MySQL
-        mysqlUseUnicode = Boolean.valueOf(JiveGlobals.getXMLProperty("database.mysql.useUnicode"));
+        mysqlUseUnicode = Boolean.parseBoolean(JiveGlobals.getXMLProperty("database.mysql.useUnicode"));
         try {
             if (minCons != null) {
                 minConnections = Integer.parseInt(minCons);

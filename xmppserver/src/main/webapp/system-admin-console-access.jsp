@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2022-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2022-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -22,10 +22,8 @@
 <%@ page import="org.jivesoftware.util.ParamUtils" %>
 <%@ page import="java.util.*" %>
 <%@ page import="org.jivesoftware.admin.AuthCheckFilter" %>
-<%@ page import="com.github.jgonian.ipmath.Ipv4" %>
-<%@ page import="com.github.jgonian.ipmath.Ipv4Range" %>
-<%@ page import="com.github.jgonian.ipmath.Ipv6" %>
-<%@ page import="com.github.jgonian.ipmath.Ipv6Range" %>
+<%@ page import="org.jivesoftware.util.IpUtils" %>
+<%@ page import="java.util.stream.Collectors" %>
 
 <%@ taglib uri="admin" prefix="admin" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
@@ -34,41 +32,14 @@
 
 <jsp:useBean id="webManager" class="org.jivesoftware.util.WebManager" />
 <% webManager.init(request, response, session, application, out ); %>
-
-<%! public boolean isValidIpOrRange(String value) {
-    try {
-        Ipv4.parse(value);
-        return true;
-    } catch (IllegalArgumentException e) {
-        // Skip to next validation
-    }
-    try {
-        Ipv6.parse(value);
-        return true;
-    } catch (IllegalArgumentException e) {
-        // Skip to next validation
-    }
-    try {
-        Ipv4Range.parse(value);
-        return true;
-    } catch (IllegalArgumentException e) {
-        // Skip to next validation
-    }
-    try {
-        Ipv6Range.parse(value);
-        return true;
-    } catch (IllegalArgumentException e) {
-        // Skip to next validation
-    }
-    return false;
-}
-%>
 <%  final Map<String, String> errors = new HashMap<>();
 
     // Get parameters
     final String formtype = ParamUtils.getParameter(request, "formtype");
-    final String blockedIPs = request.getParameter("blockedIPs");
-    final String allowedIPs = request.getParameter("allowedIPs");
+    String deleteBlockedIP = request.getParameter("deleteBlockedIP");
+    String deleteAllowedIP = request.getParameter("deleteAllowedIP");
+    String blockValue = request.getParameter("blockValue");
+    String allowValue = request.getParameter("allowValue");
     final boolean ignoreExcludes = ParamUtils.getBooleanParameter(request, "ignore-excludes");
     final boolean isXFFEnabled = ParamUtils.getBooleanParameter( request, "XFFEnabled", AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED.getValue() );
     final boolean isCSPEnabled = ParamUtils.getBooleanParameter( request, "CSPEnabled", AdminConsolePlugin.ADMIN_CONSOLE_CONTENT_SECURITY_POLICY_ENABLED.getValue() );
@@ -81,9 +52,13 @@
     Cookie csrfCookie = CookieUtils.getCookie(request, "csrf");
     String csrfParam = ParamUtils.getParameter(request, "csrf");
 
-    if (save) {
+    if (save || blockValue != null || deleteBlockedIP != null || allowValue != null || deleteAllowedIP != null) {
         if (csrfCookie == null || csrfParam == null || !csrfCookie.getValue().equals(csrfParam)) {
             save = false;
+            deleteBlockedIP = null;
+            blockValue = null;
+            deleteAllowedIP = null;
+            allowValue = null;
             errors.put("csrf", "CSRF Failure!");
         }
     }
@@ -91,57 +66,90 @@
     CookieUtils.setCookie(request, response, "csrf", csrfParam, -1);
     pageContext.setAttribute("csrf", csrfParam);
 
+    if (deleteBlockedIP != null && errors.isEmpty())
+    {
+        final Set<String> blocklist = new HashSet<>(AuthCheckFilter.IP_ACCESS_BLOCKLIST.getValue());
+        if (blocklist.remove(deleteBlockedIP) ) {
+            AuthCheckFilter.IP_ACCESS_BLOCKLIST.setValue(blocklist);
+            webManager.logEvent("Updated Admin Console access configuration (Access Lists).", "Removed from Blocklist: '" + deleteBlockedIP + "', Blocklist now is {" + String.join(", ", AuthCheckFilter.IP_ACCESS_BLOCKLIST.getValue()) + "}");
+        }
+    }
+    if (blockValue != null && errors.isEmpty()) {
+        blockValue = IpUtils.convertIpv4WildcardRangeToCidrNotation(blockValue);
+        if (!IpUtils.isValidIpAddressOrRange(blockValue)) {
+            errors.put("invalid-blocklist-ips", blockValue);
+        } else {
+            final Set<String> blocklist = new HashSet<>(AuthCheckFilter.IP_ACCESS_BLOCKLIST.getValue());
+            if (blocklist.add(blockValue)) {
+                AuthCheckFilter.IP_ACCESS_BLOCKLIST.setValue(blocklist);
+                webManager.logEvent("Updated Admin Console access configuration (Access Lists).", "Added to Blocklist: '" + blockValue + "', Blocklist now is {" + String.join(", ", AuthCheckFilter.IP_ACCESS_BLOCKLIST.getValue()) + "}");
+                blockValue = null;
+            }
+        }
+    }
+    if (deleteAllowedIP != null && errors.isEmpty())
+    {
+        final Set<String> allowlist = new HashSet<>(AuthCheckFilter.IP_ACCESS_ALLOWLIST.getValue());
+        if (allowlist.remove(deleteAllowedIP) ) {
+            AuthCheckFilter.IP_ACCESS_ALLOWLIST.setValue(allowlist);
+            webManager.logEvent("Updated Admin Console access configuration (Access Lists).", "Removed from Allowlist: '" + deleteAllowedIP + "', Allowlist now is {" + String.join(", ", AuthCheckFilter.IP_ACCESS_ALLOWLIST.getValue()) + "}");
+        }
+    }
+    if (allowValue != null && errors.isEmpty()) {
+        allowValue = IpUtils.convertIpv4WildcardRangeToCidrNotation(allowValue);
+        if (!IpUtils.isValidIpAddressOrRange(allowValue)) {
+            errors.put("invalid-allowlist-ips", allowValue);
+        } else {
+            final Set<String> allowlist = new HashSet<>(AuthCheckFilter.IP_ACCESS_ALLOWLIST.getValue());
+            if (allowlist.add(allowValue)) {
+                AuthCheckFilter.IP_ACCESS_ALLOWLIST.setValue(allowlist);
+                webManager.logEvent("Updated Admin Console access configuration (Access Lists).", "Added to Allowlist: '" + allowValue + "', Allowlist now is {" + String.join(", ", AuthCheckFilter.IP_ACCESS_ALLOWLIST.getValue()) + "}");
+                allowValue = null;
+            }
+        }
+    }
     if (save) {
         switch (formtype)
         {
             case "ip":
-                // do validation
-                final Set<String> blockedSet = new HashSet<>();
-                for (final String address : blockedIPs.split("[,\\s]+")) {
-                    if (!address.isEmpty()) {
-                        if (isValidIpOrRange(address)) {
-                            blockedSet.add(address);
-                        } else {
-                            if (errors.containsKey("invalid-blocklist-ips")) {
-                                errors.put("invalid-blocklist-ips", errors.get("invalid-blocklist-ips") + ", " + address);
-                            } else {
-                                errors.put("invalid-blocklist-ips", address);
-                            }
-                        }
-                    }
-                }
-                final Set<String> allowedSet = new HashSet<>();
-                for (final String address : allowedIPs.split("[,\\s]+")) {
-                    if (!address.isEmpty()) {
-                        if (isValidIpOrRange(address)) {
-                            allowedSet.add(address);
-                        } else {
-                            if (errors.containsKey("invalid-allowlist-ips")) {
-                                errors.put("invalid-allowlist-ips", errors.get("invalid-allowlist-ips") + ", " + address);
-                            } else {
-                                errors.put("invalid-allowlist-ips", address);
-                            }
-                        }
-                    }
-                }
-
                 if (errors.isEmpty()) {
-                    AuthCheckFilter.IP_ACCESS_BLOCKLIST.setValue(blockedSet);
-                    AuthCheckFilter.IP_ACCESS_ALLOWLIST.setValue(allowedSet);
                     AuthCheckFilter.IP_ACCESS_IGNORE_EXCLUDES.setValue(ignoreExcludes);
 
                     // Log the event
-                    webManager.logEvent("Updated Admin Console access configuration (Access Lists).", "Blocklist = {" + String.join(", ", blockedSet) + "}\nAllowlist = {" + String.join(", ", allowedSet) + "}\nIgnore excludes = " + ignoreExcludes);
+                    webManager.logEvent("Updated Admin Console access configuration (Access Lists).", "Ignore excludes = " + AuthCheckFilter.IP_ACCESS_IGNORE_EXCLUDES.getValue());
                     response.sendRedirect("system-admin-console-access.jsp?success=true");
                     return;
                 }
                 break;
 
             case "xff":
+                final Set<String> newTrustedProxies;
+                final String trustedProxiesString = ParamUtils.getParameter( request,"XFFTrustedProxies" );
+                if (trustedProxiesString == null || trustedProxiesString.trim().isEmpty()) {
+                    newTrustedProxies = null;
+                } else {
+                    newTrustedProxies = new HashSet<>();
+                    final StringTokenizer tokenizer = new StringTokenizer(trustedProxiesString, ", \t\n\r\f");
+                    while (tokenizer.hasMoreTokens()) {
+                        String trustedProxy = tokenizer.nextToken();
+                        if (IpUtils.isValidIpAddressOrRange(trustedProxy)) {
+                            newTrustedProxies.add(trustedProxy);
+                        } else {
+                            errors.merge("trusted-proxy", trustedProxy, (oldVal, newVal) -> oldVal + ", " + newVal);
+                        }
+                    }
+                }
 
                 if (errors.isEmpty())
                 {
                     AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED.setValue( isXFFEnabled );
+
+                    final String fHeader = ParamUtils.getParameter( request, "FHeader" );
+                    if (fHeader == null || fHeader.trim().isEmpty()) {
+                        AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HEADER.setValue(null);
+                    } else {
+                        AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HEADER.setValue(fHeader.trim());
+                    }
 
                     final String xffHeader = ParamUtils.getParameter( request, "XFFHeader" );
                     if (xffHeader == null || xffHeader.trim().isEmpty()) {
@@ -157,7 +165,7 @@
                         AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_SERVER.setValue(xffServerHeader.trim());
                     }
 
-                    final String xffHostHeader = ParamUtils.getParameter( request, "xffHostHeader" );
+                    final String xffHostHeader = ParamUtils.getParameter( request, "XFFHostHeader" );
                     if (xffHostHeader == null || xffHostHeader.trim().isEmpty()) {
                         AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HOST.setValue(null);
                     } else {
@@ -171,8 +179,19 @@
                         AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HOST_NAME.setValue(name.trim());
                     }
 
+                    AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_TRUSTED_PROXIES.setValue(newTrustedProxies);
+
                     // Log the event
-                    webManager.logEvent("Updated Admin Console access configuration (X-Forwarded-For).", "X-Forwarded-For enabled: " + isXFFEnabled + "\nHeader: " + xffHeader + "\nServer Header: " + xffServerHeader + "\nHost Name: " + name );
+                    webManager.logEvent(
+                        "Updated Admin Console access configuration (Forwarded).",
+                            "Forwarded enabled: " + isXFFEnabled
+                        + "\nRFC Header: " + AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HEADER.getValue()
+                        + "\nLegacy Header: " + AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_FOR.getValue()
+                        + "\nServer Header: " + AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_SERVER.getValue()
+                        + "\nHost Header: " + AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HOST.getValue()
+                        + "\nHost Name: " + AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HOST_NAME.getValue()
+                        + "\nTrusted proxies: " + (newTrustedProxies == null || newTrustedProxies.isEmpty() ? "(none)" : String.join(", ", newTrustedProxies))
+                    );
                     response.sendRedirect("system-admin-console-access.jsp?success=true");
                     return;
                 }
@@ -190,7 +209,7 @@
                     }
 
                     // Log the event
-                    webManager.logEvent("Updated Admin Console access configuration (Content-Security-Policy).", "Content-Security-Policy enabled: " + isCSPEnabled + "\nHeader Value: " + cspValue);
+                    webManager.logEvent("Updated Admin Console access configuration (Content-Security-Policy).", "Content-Security-Policy enabled: " + isCSPEnabled + "\nHeader Value: " + AdminConsolePlugin.ADMIN_CONSOLE_CONTENT_SECURITY_POLICY_RESPONSEVALUE.getValue());
                     response.sendRedirect("system-admin-console-access.jsp?success=true");
                     return;
                 }
@@ -203,10 +222,13 @@
 
     pageContext.setAttribute("errors", errors);
     pageContext.setAttribute("success", errors.isEmpty() && success);
-    pageContext.setAttribute("blockedIPs", errors.isEmpty() ? String.join(", ", AuthCheckFilter.IP_ACCESS_BLOCKLIST.getValue()) : blockedIPs);
-    pageContext.setAttribute("allowedIPs", errors.isEmpty() ? String.join(", ", AuthCheckFilter.IP_ACCESS_ALLOWLIST.getValue()) : allowedIPs);
+    pageContext.setAttribute("blockedIPs", AuthCheckFilter.IP_ACCESS_BLOCKLIST.getValue().stream().sorted().collect(Collectors.toList()));
+    pageContext.setAttribute("allowedIPs", AuthCheckFilter.IP_ACCESS_ALLOWLIST.getValue().stream().sorted().collect(Collectors.toList()));
     pageContext.setAttribute("ignoreExcludes", errors.isEmpty() ? AuthCheckFilter.IP_ACCESS_IGNORE_EXCLUDES.getValue() : ignoreExcludes);
-    pageContext.setAttribute("formattedRemoteAddress", AuthCheckFilter.removeBracketsFromIpv6Address(pageContext.getRequest().getRemoteAddr()));
+    pageContext.setAttribute("formattedRemoteAddress", IpUtils.removeBracketsFromIpv6Address(pageContext.getRequest().getRemoteAddr()));
+    pageContext.setAttribute("blockValue", blockValue);
+    pageContext.setAttribute("allowValue", allowValue);
+    pageContext.setAttribute("trustedProxies", AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_TRUSTED_PROXIES.getValue() == null ? "" : String.join(", ", AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_TRUSTED_PROXIES.getValue()));
 
 %>
 
@@ -232,6 +254,7 @@
                     <c:when test="${err.key eq 'csrf'}"><fmt:message key="global.csrf.failed" /></c:when>
                     <c:when test="${err.key eq 'invalid-blocklist-ips'}"><fmt:message key="system.admin.console.access.iplists.blocklist.invalid-hint"><fmt:param><c:out value="${err.value}"/></fmt:param></fmt:message></c:when>
                     <c:when test="${err.key eq 'invalid-allowlist-ips'}"><fmt:message key="system.admin.console.access.iplists.allowlist.invalid-hint"><fmt:param><c:out value="${err.value}"/></fmt:param></fmt:message></c:when>
+                    <c:when test="${err.key eq 'trusted-proxy'}"><fmt:message key="system.admin.console.xff.trusted-proxy.invalid-hint"><fmt:param><c:out value="${err.value}"/></fmt:param></fmt:message></c:when>
                     <c:otherwise>
                         <c:if test="${not empty err.value}">
                             <fmt:message key="admin.error"/>: <c:out value="${err.value}"/>
@@ -263,20 +286,104 @@
         <input type="hidden" name="formtype" value="ip">
 
         <p><fmt:message key="system.admin.console.access.iplists.blocklist.info" /></p>
-        <table>
+
+        <table class="jive-table">
             <tr>
-                <td style="vertical-align: top"><b><label for="blockedIPs"><fmt:message key="system.admin.console.access.iplists.blocklist.label" /></label></b></td>
-                <td><textarea name="blockedIPs" id="blockedIPs" cols="40" rows="3"><c:if test="${not empty blockedIPs}"><c:out value="${blockedIPs}"/></c:if></textarea></td>
+                <th style="width: 1%; white-space: nowrap">&nbsp;</th>
+                <th style="width: 50%; white-space: nowrap"><fmt:message key="system.admin.console.access.iplists.blocklist.label" /></th>
+                <th style="width: 1%; white-space: nowrap"><fmt:message key="global.delete" /></th>
             </tr>
+            <c:choose>
+                <c:when test="${empty blockedIPs}">
+                    <tr>
+                        <td style="text-align: center" colspan="3"><fmt:message key="global.list.empty" /></td>
+                    </tr>
+                </c:when>
+                <c:otherwise>
+                    <c:forEach var="blockedIP" varStatus="status" items="${blockedIPs}">
+                        <tr>
+                            <td></td>
+                            <td><c:out value="${blockedIP}"/></td>
+                            <td style="border-right:1px #ccc solid; text-align: center">
+                                <c:url var="deleteurl" value="system-admin-console-access.jsp">
+                                    <c:param name="deleteBlockedIP" value="${admin:escapeHTMLTags(blockedIP)}"/>
+                                    <c:param name="csrf" value="${csrf}"/>
+                                </c:url>
+                                <a href="#" onclick="if (confirm('<fmt:message key="system.admin.console.access.iplists.confirm_delete_ip"><fmt:param><c:out value="${blockedIP}"/></fmt:param></fmt:message>')) { location.replace('${deleteurl}'); } "
+                                   title="<fmt:message key="global.click_delete" />"><img src="images/delete-16x16.gif" alt=""></a>
+                            </td>
+                        </tr>
+                    </c:forEach>
+                </c:otherwise>
+            </c:choose>
         </table>
 
-        <p><fmt:message key="system.admin.console.access.iplists.allowlist.info" /></p>
-        <table>
+        <br/>
+
+        <form action="system-admin-console-access.jsp" method="post">
+            <input type="hidden" name="csrf" value="${csrf}">
+            <table>
+                <tr>
+                    <td style="width: 1%; white-space: nowrap">
+                        <b><label for="blockValue"><fmt:message key="system.admin.console.access.iplists.block-value" /></label></b>
+                    </td>
+                    <td>
+                        <input type="text" size="40" name="blockValue" id="blockValue" value="${fn:escapeXml(blockValue)}" ${not empty errors['invalid-blocklist-ips'] ? 'autofocus style=\'background-color: #ffdddd;\'' :''}/>
+                        <input type="submit" name="addBlockedIP" value="<fmt:message key="global.add" />">
+                    </td>
+                </tr>
+            </table>
+        </form>
+
+        <br/>
+
+        <table class="jive-table">
             <tr>
-                <td style="vertical-align: top"><b><label for="allowedIPs"><fmt:message key="system.admin.console.access.iplists.allowlist.label" /></label></b></td>
-                <td><textarea name="allowedIPs" id="allowedIPs" cols="40" rows="3"><c:if test="${not empty allowedIPs}"><c:out value="${allowedIPs}"/></c:if></textarea></td>
+                <th style="width: 1%; white-space: nowrap">&nbsp;</th>
+                <th style="width: 50%; white-space: nowrap"><fmt:message key="system.admin.console.access.iplists.allowlist.label"/></th>
+                <th style="width: 1%; white-space: nowrap"><fmt:message key="global.delete" /></th>
             </tr>
+            <c:choose>
+                <c:when test="${empty allowedIPs}">
+                    <tr>
+                        <td style="text-align: center" colspan="3"><fmt:message key="global.list.empty" /></td>
+                    </tr>
+                </c:when>
+                <c:otherwise>
+                    <c:forEach var="allowedIP" varStatus="status" items="${allowedIPs}">
+                        <tr>
+                            <td></td>
+                            <td><c:out value="${allowedIP}"/></td>
+                            <td style="border-right:1px #ccc solid; text-align: center">
+                                <c:url var="deleteurl" value="system-admin-console-access.jsp">
+                                    <c:param name="deleteAllowedIP" value="${admin:escapeHTMLTags(allowedIP)}"/>
+                                    <c:param name="csrf" value="${csrf}"/>
+                                </c:url>
+                                <a href="#" onclick="if (confirm('<fmt:message key="system.admin.console.access.iplists.confirm_delete_ip"><fmt:param><c:out value="${allowedIP}"/></fmt:param></fmt:message>')) { location.replace('${deleteurl}'); } "
+                                   title="<fmt:message key="global.click_delete" />"><img src="images/delete-16x16.gif" alt=""></a>
+                            </td>
+                        </tr>
+                    </c:forEach>
+                </c:otherwise>
+            </c:choose>
         </table>
+
+        <br/>
+
+        <form action="system-admin-console-access.jsp" method="post">
+            <input type="hidden" name="csrf" value="${csrf}">
+            <table>
+                <tr>
+                    <td style="width: 1%; white-space: nowrap">
+                        <b><label for="allowValue"><fmt:message key="system.admin.console.access.iplists.allow-value" /></label></b>
+                    </td>
+                    <td>
+                        <input type="text" size="40" name="allowValue" id="allowValue" value="${fn:escapeXml(allowValue)}" ${not empty errors['invalid-allowlist-ips'] ? 'autofocus style=\'background-color: #ffdddd;\'' :''}/>
+                        <input type="submit" name="addAllowedIP" value="<fmt:message key="global.add" />">
+                    </td>
+                </tr>
+            </table>
+        </form>
 
         <p><fmt:message key="system.admin.console.access.iplists.ignore-excludes.info" /></p>
         <p>
@@ -306,6 +413,10 @@
                     <label for="rb07"><b><fmt:message key="system.admin.console.xff.label_enable"/></b> - <fmt:message key="system.admin.console.xff.label_enable_info"/></label>
                     <table>
                         <tr>
+                            <td><label for="FHeader"><fmt:message key="system.admin.console.xff.forwarded"/></label></td>
+                            <td><input id="FHeader" type="text" size="40" name="FHeader" value="${fn:escapeXml(AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HEADER.value == null ? "" : AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HEADER.value)}"></td>
+                        </tr>
+                        <tr>
                             <td><label for="XFFHeader"><fmt:message key="system.admin.console.xff.forwarded_for"/></label></td>
                             <td><input id="XFFHeader" type="text" size="40" name="XFFHeader" value="${fn:escapeXml(AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_FOR.value == null ? "" : AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_FOR.value)}"></td>
                         </tr>
@@ -320,6 +431,13 @@
                         <tr>
                             <td><label for="XFFHostName"><fmt:message key="system.admin.console.xff.host_name"/></label></td>
                             <td><input id="XFFHostName" type="text" size="40" name="XFFHostName" value="${fn:escapeXml(AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HOST_NAME.value == null ? "" : AdminConsolePlugin.ADMIN_CONSOLE_FORWARDED_HOST_NAME.value)}"></td>
+                        </tr>
+                        <tr>
+                            <td style="vertical-align: top"><label for="XFFTrustedProxies"><fmt:message key="system.admin.console.xff.trusted_proxies"/></label></td>
+                            <td>
+                                <textarea id="XFFTrustedProxies" name="XFFTrustedProxies" cols="40" rows="3"><c:out value="${trustedProxies}"/></textarea>
+                                <div class="openfire-helpicon-with-tooltip"><span class="helpicon"></span><span class="tooltiptext"><fmt:message key="system.admin.console.xff.trusted_proxies_help"/></span></div>
+                            </td>
                         </tr>
                     </table>
                 </td>

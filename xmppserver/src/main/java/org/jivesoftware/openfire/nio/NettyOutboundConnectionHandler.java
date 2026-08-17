@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2023-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package org.jivesoftware.openfire.nio;
 
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import org.dom4j.*;
 import org.jivesoftware.openfire.Connection;
@@ -37,6 +36,9 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateException;
+import java.security.cert.CertificateExpiredException;
+import java.security.cert.CertificateNotYetValidException;
+import java.security.cert.CertificateRevokedException;
 import java.time.Duration;
 
 /**
@@ -46,7 +48,7 @@ import java.time.Duration;
  * @author Matthew Vivian
  * @author Alex Gidman
  */
-public class NettyOutboundConnectionHandler extends NettyConnectionHandler {
+public class NettyOutboundConnectionHandler extends NettyConnectionHandler<RespondingServerStanzaHandler> {
     private static final Logger Log = LoggerFactory.getLogger(NettyOutboundConnectionHandler.class);
     private final DomainPair domainPair;
     private final int port;
@@ -69,7 +71,7 @@ public class NettyOutboundConnectionHandler extends NettyConnectionHandler {
     }
 
     @Override
-    StanzaHandler createStanzaHandler(NettyConnection connection) {
+    RespondingServerStanzaHandler createStanzaHandler(NettyConnection connection) {
         return new RespondingServerStanzaHandler( XMPPServer.getInstance().getPacketRouter(), connection, domainPair );
     }
 
@@ -150,10 +152,18 @@ public class NettyOutboundConnectionHandler extends NettyConnectionHandler {
             } else {
                 // SSL Handshake has failed
                 Log.debug("TLS negotiation with '{}' was unsuccessful", domainPair.getRemote(), event.cause());
-                ctx.pipeline().remove(SslHandler.class);
 
                 if (isCertificateException(event) && configRequiresStrictCertificateValidation()) {
-                    Log.warn("TLS negotiation with '{}' was unsuccessful, caused by a certificate issue. Aborting session, as by configuration Openfire is prohibited to set up a connection with a peer that provides an invalid certificate.", domainPair.getRemote(), event.cause());
+                    String condition = "caused by an issue with its TLS certificate";
+                    if (hasCauseOfType(event.cause(), CertificateExpiredException.class)) {
+                        condition = "because its TLS certificate expired (the certificate's 'not-after' condition fails)";
+                    } else if (hasCauseOfType(event.cause(), CertificateNotYetValidException.class)) {
+                        condition = "because its TLS certificate is not yet valid (the certificate's 'not-before' condition fails)";
+                    } else if (hasCauseOfType(event.cause(), CertificateRevokedException.class)) {
+                        condition = "because its TLS certificate was revoked by the Certificate Authority that issued it";
+                    }
+                    Log.warn("TLS negotiation with '{}' was unsuccessful, {}. Aborting session, as by configuration Openfire is prohibited to set up a connection with a peer that provides an invalid certificate. A full stack trace will be logged on the ‘debug’ level.", domainPair.getRemote(), condition);
+
                     stanzaHandler.setSession(null);
                     stanzaHandler.setAttemptedAllAuthenticationMethods();
                     ctx.channel().close();
@@ -191,6 +201,16 @@ public class NettyOutboundConnectionHandler extends NettyConnectionHandler {
 
     private static boolean isCertificateException(SslHandshakeCompletionEvent event) {
         return event.cause().getCause() instanceof CertificateException;
+    }
+
+    private static boolean hasCauseOfType(Throwable throwable, Class<? extends Throwable> cause) {
+        if (cause.isAssignableFrom(throwable.getClass())) {
+            return true;
+        }
+        if (throwable.getCause() != null) {
+            return hasCauseOfType(throwable.getCause(), cause);
+        }
+        return false;
     }
 
     private void sendNewStreamHeader(NettyConnection connection) {

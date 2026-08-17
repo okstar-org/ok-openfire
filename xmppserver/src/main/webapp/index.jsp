@@ -1,7 +1,7 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software, 2016-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -27,36 +27,29 @@
 <%@ page import="org.jivesoftware.openfire.spi.ConnectionType" %>
 <%@ page import="org.jivesoftware.openfire.update.Update" %>
 <%@ page import="org.jivesoftware.openfire.update.UpdateManager" %>
-<%@ page import="org.jivesoftware.util.JiveGlobals" %>
-<%@ page import="org.jivesoftware.util.LocaleUtils" %>
-<%@ page import="org.jivesoftware.util.StringUtils" %>
-<%@ page import="org.slf4j.LoggerFactory" %>
 <%@ page import="java.util.List" %>
 <%@ page import="org.jivesoftware.openfire.net.DNSUtil" %>
 <%@ page import="org.xmpp.packet.JID" %>
-<%@ page import="java.io.InputStream" %>
-<%@ page import="org.apache.http.HttpHost" %>
-<%@ page import="org.apache.http.conn.routing.HttpRoutePlanner" %>
-<%@ page import="org.apache.http.impl.conn.DefaultProxyRoutePlanner" %>
-<%@ page import="org.apache.http.impl.conn.DefaultRoutePlanner" %>
-<%@ page import="org.apache.http.impl.client.CloseableHttpClient" %>
-<%@ page import="org.apache.http.impl.client.HttpClients" %>
-<%@ page import="org.apache.http.client.methods.CloseableHttpResponse" %>
-<%@ page import="org.apache.http.client.methods.HttpGet" %>
-<%@ page import="java.io.InputStreamReader" %>
-<%@ page import="org.jivesoftware.util.MemoryUsageMonitor" %>
 <%@ page import="org.jivesoftware.openfire.ConnectionManager" %>
 <%@ page import="org.jivesoftware.openfire.spi.ConnectionManagerImpl" %>
 <%@ page import="org.jivesoftware.admin.servlet.BlogPostServlet" %>
+<%@ page import="org.jivesoftware.openfire.net.SrvRecord" %>
+<%@ page import="java.net.InetAddress" %>
+<%@ page import="java.net.UnknownHostException" %>
+<%@ page import="org.jivesoftware.util.*" %>
+<%@ page import="java.util.concurrent.Future" %>
+<%@ page import="java.util.concurrent.TimeUnit" %>
+<%@ page import="org.jivesoftware.openfire.pubsub.PubSubSubscriptionMaintenance" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
+<%@ taglib uri="admin" prefix="admin" %>
 
 <%-- Define page bean for header and sidebar --%>
 <jsp:useBean id="pageinfo" scope="request" class="org.jivesoftware.admin.AdminPageBean" />
 
 <%  // Simple logout code
-    if ("true".equals(request.getParameter("logout"))) {
+    if (ParamUtils.getBooleanParameter(request, "logout")) {
         session.removeAttribute("jive.admin.authToken");
         response.sendRedirect("index.jsp");
         return;
@@ -125,7 +118,16 @@
 <%
     UpdateManager updateManager = XMPPServer.getInstance().getUpdateManager();
     Update serverUpdate = updateManager.getServerUpdate();
-    pageContext.setAttribute( "serverUpdate", serverUpdate ); %>
+    pageContext.setAttribute( "serverUpdate", serverUpdate );
+
+    pageContext.setAttribute( "hasPluginWarnings", XMPPServer.getInstance().getPluginManager().hasLoadWarnings());
+
+    // Check if Blowfish migration is needed
+    pageContext.setAttribute( "needsBlowfishMigration", JiveGlobals.isBlowfishMigrationNeeded() );
+
+    // Cheap, cached check (never blocks; refreshes in the background) for redundant pubsub subscription rows (OF-3306).
+    pageContext.setAttribute( "pubsubCleanupAdvisable", PubSubSubscriptionMaintenance.isCleanupAdvisable() );
+%>
 
     <c:if test="${not empty serverUpdate}">
         <div class="warning">
@@ -153,6 +155,32 @@
         <br>
     </c:if>
 
+    <c:if test="${hasPluginWarnings}">
+        <admin:infoBox type="warning">
+            <fmt:message key="index.plugin.load-warning">
+                <fmt:param value="<a href=\"./plugin-admin.jsp\">" />
+                <fmt:param value="</a>"/>
+            </fmt:message>
+        </admin:infoBox>
+    </c:if>
+
+    <c:if test="${needsBlowfishMigration}">
+        <admin:infoBox type="warning">
+            <fmt:message key="index.blowfish-migration.warning">
+                <fmt:param value="<a href=\"./security-blowfish-migration.jsp\">" />
+                <fmt:param value="</a>"/>
+            </fmt:message>
+        </admin:infoBox>
+    </c:if>
+
+    <c:if test="${pubsubCleanupAdvisable}">
+        <admin:infoBox type="warning">
+            <fmt:message key="index.pubsub-subscription-maintenance.warning">
+                <fmt:param value="<a href=\"./pubsub-subscription-maintenance.jsp\">" />
+                <fmt:param value="</a>"/>
+            </fmt:message>
+        </admin:infoBox>
+    </c:if>
 <style>
 .bar TD {
     padding : 0;
@@ -319,24 +347,38 @@
                     <% try { String whatevs = JID.domainprep(webManager.getXMPPServer().getServerInfo().getHostname()); } catch (Exception e) { %>
                     <img src="images/error-16x16.gif" width="12" height="12" alt="<fmt:message key="index.hostname-stringprep-error" />" title="<fmt:message key="index.hostname-stringprep-error" />">&nbsp;
                     <% } %>
-                    <%  // Determine if the DNS configuration for this XMPP domain needs to be evaluated.
-                        final String xmppDomain = XMPPServer.getInstance().getServerInfo().getXMPPDomain();
-                        final String hostname = XMPPServer.getInstance().getServerInfo().getHostname();
-                        boolean dnsIssue = false;
-                        if ( !xmppDomain.equalsIgnoreCase( hostname ) )
-                        {
-                            dnsIssue = true;
-                            final List<DNSUtil.WeightedHostAddress> dnsSrvRecords = DNSUtil.srvLookup( "xmpp-client", "tcp", xmppDomain );
-                            for ( final DNSUtil.WeightedHostAddress dnsSrvRecord : dnsSrvRecords )
-                            {
-                                if ( hostname.equalsIgnoreCase( dnsSrvRecord.getHost() ) )
-                                {
+                    <% final Future<Boolean> dnsIssueFuture = TaskEngine.getInstance().submit(() -> {
+                            // Determine if the DNS configuration for this XMPP domain needs to be evaluated.
+                            final String xmppDomain = XMPPServer.getInstance().getServerInfo().getXMPPDomain();
+                            final String hostname = XMPPServer.getInstance().getServerInfo().getHostname();
+                            boolean dnsIssue = false;
+                            if (!xmppDomain.equalsIgnoreCase(hostname)) {
+                                final List<SrvRecord> dnsSrvRecords = DNSUtil.srvLookup("xmpp-client", "tcp", xmppDomain);
+                                dnsIssue = dnsSrvRecords.stream().anyMatch(r -> hostname.equalsIgnoreCase(r.getHostname()));
+                                if (!dnsIssue) {
+                                    for (final SrvRecord dnsSrvRecord : dnsSrvRecords) {
+                                        try {
+                                            InetAddress.getAllByName(dnsSrvRecord.getHostname());
+                                        } catch (UnknownHostException e) {
+                                            dnsIssue = true;
+                                            break;
+                                        }
+                                    }
+                                } else {
                                     dnsIssue = false;
-                                    break;
                                 }
                             }
+                            return dnsIssue;
+                        });
+
+                        // Only attempt to detect DNS issues for a short time, to not delay rending this primary landing page for long.
+                        boolean showDnsWarning;
+                        try {
+                            showDnsWarning = dnsIssueFuture.get(1, TimeUnit.SECONDS);
+                        } catch (Throwable e) {
+                            showDnsWarning = false;
                         }
-                        if ( dnsIssue ) {
+                        if ( showDnsWarning ) {
                         %>
                         <img src="images/warning-16x16.gif" width="12" height="12" alt="DNS configuration appears to be missing or incorrect.">
                             <fmt:message key="index.dns-warning">
@@ -462,30 +504,15 @@
         </td>
         <td>
             <%
-                final String typeName;
-                switch ( connectionListener.getType() ) {
-                    case SOCKET_C2S:
-                        typeName = LocaleUtils.getLocalizedString("ports.client_to_server");
-                        break;
-                    case SOCKET_S2S:
-                        typeName = LocaleUtils.getLocalizedString("ports.server_to_server");
-                        break;
-                    case COMPONENT:
-                        typeName = LocaleUtils.getLocalizedString("ports.external_components");
-                        break;
-                    case CONNECTION_MANAGER:
-                        typeName = LocaleUtils.getLocalizedString("ports.connection_manager");
-                        break;
-                    case WEBADMIN:
-                        typeName = LocaleUtils.getLocalizedString("ports.admin_console");
-                        break;
-                    case BOSH_C2S:
-                        typeName = LocaleUtils.getLocalizedString("ports.http_bind");
-                        break;
-                    default:
-                        typeName = "(unspecified)";
-                        break;
-                }
+                final String typeName = switch (connectionListener.getType()) {
+                    case SOCKET_C2S -> LocaleUtils.getLocalizedString("ports.client_to_server");
+                    case SOCKET_S2S -> LocaleUtils.getLocalizedString("ports.server_to_server");
+                    case COMPONENT  -> LocaleUtils.getLocalizedString("ports.external_components");
+                    case WEBADMIN   -> LocaleUtils.getLocalizedString("ports.admin_console");
+                    case BOSH_C2S   -> LocaleUtils.getLocalizedString("ports.http_bind");
+                    case CONNECTION_MANAGER -> LocaleUtils.getLocalizedString("ports.connection_manager");
+                    default -> "(unspecified)";
+                };
             %>
             <%=typeName%>
         </td>

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import org.jivesoftware.openfire.ConnectionManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.keystore.CertificateStoreConfiguration;
 import org.jivesoftware.openfire.net.SocketConnection;
+import org.jivesoftware.openfire.session.ConnectionSettings;
 import org.jivesoftware.util.JiveGlobals;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,7 +112,7 @@ public class ConnectionListener
      * @param maxPoolSizePropertyName Property name (of an int) that defines maximum IO processing threads. Null causes an unconfigurable default amount to be used.
      * @param maxReadBufferPropertyName Property name (of an int) that defines maximum amount (in bytes) of IO data can be cached, pending processing. Null to indicate boundless caches.
      * @param tlsPolicyPropertyName Property name (of a string) that defines the applicable TLS Policy. Or, the value {@link org.jivesoftware.openfire.Connection.TLSPolicy} to indicate unconfigurable TLS Policy. Cannot be null.
-     * @param clientAuthPolicyPropertyName Property name (of an string) that defines maximum IO processing threads. Null causes a unconfigurabel value of 'wanted' to be used.
+     * @param clientAuthPolicyPropertyName Property name (of an string) that defines maximum IO processing threads. Null causes a unconfigurable value of 'wanted' to be used.
      * @param bindAddress the address to bind to
      * @param identityStoreConfiguration the certificates the server identify as
      * @param trustStoreConfiguration the certificates the server trusts
@@ -151,7 +152,7 @@ public class ConnectionListener
             return true;
         }
         // TODO if this is an TLS connection, legacy code required the existence of at least one certificate in the identity store in addition to the property value (although no such requirement is enforced for a TLS connection that might or might not be elevated to encrypted).
-        return JiveGlobals.getBooleanProperty( isEnabledPropertyName, true );
+        return JiveGlobals.getBooleanProperty( isEnabledPropertyName, type != ConnectionType.CONNECTION_MANAGER); // Default to 'true' for all but the rarely-used connection managers (OF-2453).
     }
 
     /**
@@ -289,6 +290,7 @@ public class ConnectionListener
                 trustStoreConfiguration,
                 acceptSelfSignedCertificates(),
                 verifyCertificateValidity(),
+                verifyCertificateRevocation(),
                 getEncryptionProtocols(),
                 getEncryptionCipherSuites(),
                 getCompressionPolicy(),
@@ -323,7 +325,7 @@ public class ConnectionListener
                     Log.warn("SocketAcceptorEventListener '{}' threw exception while processing acceptor stopping event for acceptor: {}", eventListener, connectionAcceptor, t);
                 }
             });
-            connectionAcceptor.stop();
+            connectionAcceptor.stop(); // Stop accepting inbound S2S connections.
         }
         finally
         {
@@ -485,7 +487,7 @@ public class ConnectionListener
     }
 
     /**
-     * Returns the applicable TLS policy, but only when it is hardcoded (and inconfigurable).
+     * Returns the applicable TLS policy, but only when it is hardcoded (and unconfigurable).
      * @return a policy or null.
      */
     private Connection.TLSPolicy getHardcodedTLSPolicy()
@@ -591,24 +593,13 @@ public class ConnectionListener
     public Connection.CompressionPolicy getCompressionPolicy()
     {
         // Depending on the connection type, define a good default value.
-        final Connection.CompressionPolicy defaultPolicy;
-        switch ( getType() )
-        {
+        final Connection.CompressionPolicy defaultPolicy = switch (getType()) {
             // More likely to have good bandwidth. Compression on high-volume data gobbles CPU.
-            case COMPONENT:
-            case CONNECTION_MANAGER:
-            case SOCKET_S2S:
-                defaultPolicy = Connection.CompressionPolicy.disabled;
-                break;
+            case COMPONENT, CONNECTION_MANAGER, SOCKET_S2S -> Connection.CompressionPolicy.disabled;
 
             // At least *offer* compression functionality.
-            case SOCKET_C2S:
-            case BOSH_C2S:
-            case WEBADMIN:
-            default:
-                defaultPolicy = Connection.CompressionPolicy.optional;
-                break;
-        }
+            default -> Connection.CompressionPolicy.optional;
+        };
 
         if ( compressionPolicyPropertyName == null )
         {
@@ -722,28 +713,40 @@ public class ConnectionListener
      */
     public boolean acceptSelfSignedCertificates()
     {
-        // TODO these are new properties! Deprecate (migrate?) all existing 'accept-selfsigned properties' (Eg: org.jivesoftware.openfire.session.ConnectionSettings.Server.TLS_ACCEPT_SELFSIGNED_CERTS )
-        final String propertyName = type.getPrefix() + "certificate.accept-selfsigned";
         final boolean defaultValue = false;
 
-        if ( type.getFallback() == null )
+        // Recursively check the old properties at every step in the fallback chain.
+        ConnectionType currentType = type;
+        while (currentType != null)
         {
-            return JiveGlobals.getBooleanProperty( propertyName, defaultValue );
+            // This checks the 'old' properties, that have been marked as deprecated in Openfire 5.1.0 (OF-3259)
+            if (currentType == ConnectionType.SOCKET_S2S && JiveGlobals.getBooleanProperty(ConnectionSettings.Server.TLS_ACCEPT_SELFSIGNED_CERTS, defaultValue)) {
+                return true;
+            }
+            if (currentType.isClientOriented() && JiveGlobals.getBooleanProperty("xmpp.client.certificate.accept-selfsigned", defaultValue)) {
+                return true;
+            }
+
+            // This checks the 'new' properties.
+            final String propertyName = currentType.getPrefix() + "certificate.accept-selfsigned";
+            if (JiveGlobals.getProperty(propertyName) != null) {
+                return JiveGlobals.getBooleanProperty(propertyName, defaultValue);
+            }
+
+            // Recursively check the fallback properties.
+            currentType = currentType.getFallback();
         }
-        else
-        {
-            return JiveGlobals.getBooleanProperty( propertyName, getConnectionListener( type.getFallback() ).acceptSelfSignedCertificates() );
-        }
+        return defaultValue;
     }
 
     /**
-     * Configuresif self-signed peer certificates can be used to establish an encrypted connection.
+     * Configures if self-signed peer certificates can be used to establish an encrypted connection.
      *
      * @param accept true when self-signed certificates are accepted, otherwise false.
      */
     public void setAcceptSelfSignedCertificates( boolean accept )
     {
-        final boolean oldValue = verifyCertificateValidity();
+        final boolean oldValue = acceptSelfSignedCertificates();
 
         // Always set the property explicitly even if it appears the equal to the old value (the old value might be a fallback value).
         JiveGlobals.setProperty( type.getPrefix() + "certificate.accept-selfsigned", Boolean.toString( accept ) );
@@ -766,18 +769,30 @@ public class ConnectionListener
      */
     public boolean verifyCertificateValidity()
     {
-        // TODO these are new properties! Deprecate (migrate?) all existing 'verify / verify-validity properties' (Eg: org.jivesoftware.openfire.session.ConnectionSettings.Server.TLS_CERTIFICATE_VERIFY_VALIDITY )
-        final String propertyName = type.getPrefix() + "certificate.verify.validity";
         final boolean defaultValue = true;
 
-        if ( type.getFallback() == null )
+        // Recursively check the old properties at every step in the fallback chain.
+        ConnectionType currentType = type;
+        while (currentType != null)
         {
-            return JiveGlobals.getBooleanProperty( propertyName, defaultValue );
+            // This checks the 'old' properties, that have been marked as deprecated in Openfire 5.1.0 (OF-3259)
+            if (currentType == ConnectionType.SOCKET_S2S && !JiveGlobals.getBooleanProperty(ConnectionSettings.Server.TLS_CERTIFICATE_VERIFY_VALIDITY, defaultValue)) {
+                return false;
+            }
+            if (currentType.isClientOriented() && !JiveGlobals.getBooleanProperty("xmpp.client.certificate.verify.validity", defaultValue)) {
+                return false;
+            }
+
+            // This checks the 'new' properties.
+            final String propertyName = currentType.getPrefix() + "certificate.verify.validity";
+            if (JiveGlobals.getProperty(propertyName) != null) {
+                return JiveGlobals.getBooleanProperty(propertyName, defaultValue);
+            }
+
+            // Recursively check the fallback properties.
+            currentType = currentType.getFallback();
         }
-        else
-        {
-            return JiveGlobals.getBooleanProperty( propertyName, getConnectionListener( type.getFallback() ).verifyCertificateValidity() );
-        }
+        return defaultValue;
     }
 
     /**
@@ -800,6 +815,52 @@ public class ConnectionListener
         }
 
         Log.debug( "Changing certificate validity verification configuration from '{}' to '{}'.", oldValue, verify );
+        restart();
+    }
+
+    /**
+     * Returns whether certificate revocation checking is enabled.
+     * When enabled, certificates will be verified against Certificate Revocation Lists (CRL)
+     * and through Online Certificate Status Protocol (OCSP) to ensure they have not been revoked.
+     *
+     * @return true if certificate revocation checking is enabled, false otherwise
+     */
+    public boolean verifyCertificateRevocation()
+    {
+        final String propertyName = type.getPrefix() + "certificate.verify.revocation";
+        final boolean defaultValue = false;
+
+        if ( type.getFallback() == null )
+        {
+            return JiveGlobals.getBooleanProperty( propertyName, defaultValue );
+        }
+        else
+        {
+            return JiveGlobals.getBooleanProperty( propertyName, getConnectionListener( type.getFallback() ).verifyCertificateRevocation() );
+        }
+    }
+
+    /**
+     * Sets whether certificate revocation checking should be enabled.
+     * When enabled, certificates will be verified against Certificate Revocation Lists (CRL)
+     * and through Online Certificate Status Protocol (OCSP) to ensure they have not been revoked.
+     *
+     * @param verify true to enable certificate revocation checking, false to disable it
+     */
+    public void setVerifyCertificateRevocation( boolean verify )
+    {
+        final boolean oldValue = verifyCertificateRevocation();
+
+        // Always set the property explicitly even if it appears the equal to the old value (the old value might be a fallback value).
+        JiveGlobals.setProperty( type.getPrefix() + "certificate.verify.revocation", Boolean.toString( verify ) );
+
+        if ( oldValue == verify )
+        {
+            Log.debug( "Ignoring certificate revocation verification configuration change request (to '{}'): listener already in this state.", verify );
+            return;
+        }
+
+        Log.debug( "Changing certificate revocation verification configuration from '{}' to '{}'.", oldValue, verify );
         restart();
     }
 
@@ -897,7 +958,7 @@ public class ConnectionListener
             csv.append( protocol );
             csv.append( ',' );
         }
-        final String newValue = csv.length() > 0 ? csv.substring( 0, csv.length() - 1 ) : "";
+        final String newValue = !csv.isEmpty() ? csv.substring( 0, csv.length() - 1 ) : "";
         JiveGlobals.setProperty( type.getPrefix() + "protocols", newValue );
 
         if ( oldValue.equals( newValue ) )
@@ -1004,7 +1065,7 @@ public class ConnectionListener
             csv.append( cipherSuite );
             csv.append( ',' );
         }
-        final String newValue = csv.length() > 0 ? csv.substring( 0, csv.length() - 1 ) : "";
+        final String newValue = !csv.isEmpty() ? csv.substring( 0, csv.length() - 1 ) : "";
         JiveGlobals.setProperty( type.getPrefix() + "ciphersuites", newValue );
 
         if ( oldValue.equals( newValue ) )

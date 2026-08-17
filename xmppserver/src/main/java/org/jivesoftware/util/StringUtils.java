@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.text.BreakIterator;
-import java.text.MessageFormat;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -223,7 +222,7 @@ public final class StringUtils {
      */
     public static String escapeHTMLTags(String in, boolean includeLF) {
         if (in == null) {
-            return null;
+            return "";
         }
         char ch;
         int i = 0;
@@ -392,46 +391,6 @@ public final class StringUtils {
     }
 
     /**
-     * Encodes a String as a base64 String.
-     *
-     * @param data a String to encode.
-     * @return a base64 encoded String.
-     * @deprecated Use java.util.Base64 instead.
-     */
-    @Deprecated(forRemoval = true, since = "4.9.0") // Remove in or after Openfire 4.10.0
-    public static String encodeBase64(String data) {
-        return java.util.Base64.getEncoder().encodeToString(data.getBytes(StandardCharsets.UTF_8));
-    }
-
-    /**
-     * Encodes a byte array into a base64 String.
-     *
-     * @param data a byte array to encode.
-     * @return a base64 encode String.
-     * @deprecated Use java.util.Base64 instead.
-     */
-    @Deprecated(forRemoval = true, since = "4.9.0") // Remove in or after Openfire 4.10.0
-    public static String encodeBase64(byte[] data) {
-        // Encode the String. We pass in a flag to specify that line
-        // breaks not be added. This is consistent with our previous base64
-        // implementation. Section 2.1 of 3548 (base64 spec) also specifies
-        // no line breaks by default.
-        return java.util.Base64.getEncoder().encodeToString(data);
-    }
-
-    /**
-     * Decodes a base64 String.
-     *
-     * @param data a base64 encoded String to decode.
-     * @return the decoded String.
-     * @deprecated Use java.util.Base64 instead.
-     */
-    @Deprecated(forRemoval = true, since = "4.9.0") // Remove in or after Openfire 4.10.0
-    public static byte[] decodeBase64(String data) {
-        return java.util.Base64.getDecoder().decode(data);
-    }
-
-    /**
      * Encodes a String as a base32 String using the base32hex profile.
      *
      * @param data a String to encode.
@@ -488,7 +447,7 @@ public final class StringUtils {
      * @return text broken up into an array of words.
      */
     public static String[] toLowerCaseWordArray(String text) {
-        if (text == null || text.length() == 0) {
+        if (text == null || text.isEmpty()) {
             return new String[0];
         }
 
@@ -509,7 +468,7 @@ public final class StringUtils {
             tmp = tmp.replace(")", "");
             tmp = tmp.replace("(", "");
             tmp = tmp.replace("&", "");
-            if (tmp.length() > 0) {
+            if (!tmp.isEmpty()) {
                 wordList.add(tmp);
             }
         }
@@ -571,7 +530,7 @@ public final class StringUtils {
      *         equal to <code>length</code>, and that is chopped at whitespace.
      */
     public static String chopAtWord(String string, int length) {
-        if (string == null || string.length() == 0) {
+        if (string == null || string.isEmpty()) {
             return string;
         }
 
@@ -710,7 +669,7 @@ public final class StringUtils {
         if (string == null) {
             return null;
         }
-        else if (string.length() == 0) {
+        else if (string.isEmpty()) {
             return string;
         }
 
@@ -754,7 +713,7 @@ public final class StringUtils {
      */
     public static String escapeForXML(String string) {
         if (string == null) {
-            return null;
+            return "";
         }
         char ch;
         int i = 0;
@@ -1022,7 +981,7 @@ public final class StringUtils {
      * @return a Collection representing the String.
      */
     public static Collection<String> stringToCollection(String string) {
-        if (string == null || string.trim().length() == 0) {
+        if (string == null || string.trim().isEmpty()) {
             return Collections.emptyList();
         }
         Collection<String> collection = new ArrayList<>();
@@ -1111,7 +1070,7 @@ public final class StringUtils {
      * @throws IllegalArgumentException The given domain name is not valid
      */
     public static String validateDomainName(String domain) {
-        if (domain == null || domain.trim().length() == 0) {
+        if (domain == null || domain.trim().isEmpty()) {
             throw new IllegalArgumentException("Domain name cannot be null or empty");
         }
         String result = IDN.toASCII(domain);
@@ -1119,7 +1078,7 @@ public final class StringUtils {
             // no conversion; validate again via USE_STD3_ASCII_RULES
             IDN.toASCII(domain, IDN.USE_STD3_ASCII_RULES);
         } else {
-            Log.info(MessageFormat.format("Converted domain name: from '{0}' to '{1}'",  domain, result));
+            Log.info("Converted domain name: from '{}' to '{}'", domain, result);
         }
         return result;
     }
@@ -1238,7 +1197,7 @@ public final class StringUtils {
                 quoting = true;
                 quoteChar = c;
             } else if (!quoting && Character.isWhitespace(c)) {
-                if (current.length() > 0) {
+                if (!current.isEmpty()) {
                     tokens.add(current.toString());
                     current = new StringBuilder();
                 }
@@ -1246,7 +1205,7 @@ public final class StringUtils {
                 current.append(c);
             }
         }
-        if (current.length() > 0) {
+        if (!current.isEmpty()) {
             tokens.add(current.toString());
         }
         return tokens;

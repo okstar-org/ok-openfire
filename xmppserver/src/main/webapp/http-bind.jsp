@@ -1,6 +1,6 @@
 <%--
   -
-  - Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+  - Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 <%@ page import="org.slf4j.LoggerFactory" %>
 <%@ page import="java.util.*" %>
 <%@ page import="org.jivesoftware.openfire.ConnectionManager" %>
+<%@ page import="org.jivesoftware.util.IpUtils" %>
 <%@ page contentType="text/html;charset=UTF-8" %>
 
 <%@ taglib uri="admin" prefix="admin" %>
@@ -63,65 +64,90 @@
                 mutualAuthentication = Connection.ClientAuth.valueOf( mutualAuthenticationText );
             }
 
-            try
-            {
-                HttpBindManager.HTTP_BIND_PORT.setValue(requestedPort);
-                HttpBindManager.HTTP_BIND_SECURE_PORT.setValue(requestedSecurePort);
-                HttpBindManager.HTTP_BIND_CORS_ENABLED.setValue(isCORSEnabled);
-
-                final Set<String> update = new HashSet<>();
-                if (CORSDomains == null || CORSDomains.trim().isEmpty())
-                    update.add(HttpBindManager.HTTP_BIND_CORS_ALLOW_ORIGIN_ALL);
-                else {
-                    update.addAll(Arrays.asList(CORSDomains.replaceAll("\\s+", "").split(",")));
+            final Set<String> newTrustedProxies;
+            final String trustedProxiesString = ParamUtils.getParameter( request,"XFFTrustedProxies" );
+            if (trustedProxiesString == null || trustedProxiesString.trim().isEmpty()) {
+                newTrustedProxies = null;
+            } else {
+                newTrustedProxies = new HashSet<>();
+                final StringTokenizer tokenizer = new StringTokenizer(trustedProxiesString, ", \t\n\r\f");
+                while (tokenizer.hasMoreTokens()) {
+                    String trustedProxy = tokenizer.nextToken();
+                    if (IpUtils.isValidIpAddressOrRange(trustedProxy)) {
+                        newTrustedProxies.add(trustedProxy);
+                    } else {
+                        errorMap.merge("trusted-proxy", trustedProxy, (oldVal, newVal) -> oldVal + ", " + newVal);
+                    }
                 }
-                HttpBindManager.HTTP_BIND_ALLOWED_ORIGINS.setValue(update);
-                HttpBindManager.HTTP_BIND_FORWARDED.setValue( isXFFEnabled );
-
-                final String xffHeader = ParamUtils.getParameter( request, "XFFHeader" );
-                if (xffHeader == null || xffHeader.trim().isEmpty()) {
-                    HttpBindManager.HTTP_BIND_FORWARDED_FOR.setValue(null);
-                } else {
-                    HttpBindManager.HTTP_BIND_FORWARDED_FOR.setValue(xffHeader.trim());
-                }
-
-                final String xffServerHeader = ParamUtils.getParameter( request, "XFFServerHeader" );
-                if (xffServerHeader == null || xffServerHeader.trim().isEmpty()) {
-                    HttpBindManager.HTTP_BIND_FORWARDED_SERVER.setValue(null);
-                } else {
-                    HttpBindManager.HTTP_BIND_FORWARDED_SERVER.setValue(xffServerHeader.trim());
-                }
-
-                final String xffHostHeader = ParamUtils.getParameter( request, "xffHostHeader" );
-                if (xffHostHeader == null || xffHostHeader.trim().isEmpty()) {
-                    HttpBindManager.HTTP_BIND_FORWARDED_HOST.setValue(null);
-                } else {
-                    HttpBindManager.HTTP_BIND_FORWARDED_HOST.setValue(xffHostHeader.trim());
-                }
-
-                final String name = ParamUtils.getParameter( request, "XFFHostName" );
-                if (name == null || name.trim().isEmpty()) {
-                    HttpBindManager.HTTP_BIND_FORWARDED_HOST_NAME.setValue(null);
-                } else {
-                    HttpBindManager.HTTP_BIND_FORWARDED_HOST_NAME.setValue(name.trim());
-                }
-
-                HttpBindManager.HTTP_BIND_CONTENT_SECURITY_POLICY_ENABLED.setValue( isCSPEnabled );
-                if (cspValue == null || cspValue.trim().isEmpty()) {
-                    HttpBindManager.HTTP_BIND_CONTENT_SECURITY_POLICY_RESPONSEVALUE.setValue(null);
-                } else {
-                    HttpBindManager.HTTP_BIND_CONTENT_SECURITY_POLICY_RESPONSEVALUE.setValue(cspValue.trim());
-                }
-
-                manager.getListener( ConnectionType.BOSH_C2S, true ).setClientAuth( mutualAuthentication );
             }
-            catch ( Exception e )
-            {
-                LoggerFactory.getLogger("http-bind.jsp").debug("An error has occurred configuring the HTTP binding ports.", e);
-                errorMap.put( "port", e.getMessage() );
+
+            if (errorMap.isEmpty()) {
+                try {
+                    HttpBindManager.HTTP_BIND_PORT.setValue(requestedPort);
+                    HttpBindManager.HTTP_BIND_SECURE_PORT.setValue(requestedSecurePort);
+                    HttpBindManager.HTTP_BIND_CORS_ENABLED.setValue(isCORSEnabled);
+
+                    final Set<String> update = new HashSet<>();
+                    if (CORSDomains == null || CORSDomains.trim().isEmpty())
+                        update.add(HttpBindManager.HTTP_BIND_CORS_ALLOW_ORIGIN_ALL);
+                    else {
+                        update.addAll(Arrays.asList(CORSDomains.replaceAll("\\s+", "").split(",")));
+                    }
+                    HttpBindManager.HTTP_BIND_ALLOWED_ORIGINS.setValue(update);
+                    HttpBindManager.HTTP_BIND_FORWARDED.setValue(isXFFEnabled);
+
+                final String fHeader = ParamUtils.getParameter( request, "FHeader" );
+                if (fHeader == null || fHeader.trim().isEmpty()) {
+                    HttpBindManager.HTTP_BIND_FORWARDED_HEADER.setValue(null);
+                } else {
+                    HttpBindManager.HTTP_BIND_FORWARDED_HEADER.setValue(fHeader.trim());
+                }
+
+                    final String xffHeader = ParamUtils.getParameter(request, "XFFHeader");
+                    if (xffHeader == null || xffHeader.trim().isEmpty()) {
+                        HttpBindManager.HTTP_BIND_FORWARDED_FOR.setValue(null);
+                    } else {
+                        HttpBindManager.HTTP_BIND_FORWARDED_FOR.setValue(xffHeader.trim());
+                    }
+
+                    final String xffServerHeader = ParamUtils.getParameter(request, "XFFServerHeader");
+                    if (xffServerHeader == null || xffServerHeader.trim().isEmpty()) {
+                        HttpBindManager.HTTP_BIND_FORWARDED_SERVER.setValue(null);
+                    } else {
+                        HttpBindManager.HTTP_BIND_FORWARDED_SERVER.setValue(xffServerHeader.trim());
+                    }
+
+                    final String xffHostHeader = ParamUtils.getParameter( request, "XFFHostHeader" );
+                    if (xffHostHeader == null || xffHostHeader.trim().isEmpty()) {
+                        HttpBindManager.HTTP_BIND_FORWARDED_HOST.setValue(null);
+                    } else {
+                        HttpBindManager.HTTP_BIND_FORWARDED_HOST.setValue(xffHostHeader.trim());
+                    }
+
+                    final String name = ParamUtils.getParameter(request, "XFFHostName");
+                    if (name == null || name.trim().isEmpty()) {
+                        HttpBindManager.HTTP_BIND_FORWARDED_HOST_NAME.setValue(null);
+                    } else {
+                        HttpBindManager.HTTP_BIND_FORWARDED_HOST_NAME.setValue(name.trim());
+                    }
+
+                    HttpBindManager.HTTP_BIND_FORWARDED_TRUSTED_PROXIES.setValue(newTrustedProxies);
+
+                    HttpBindManager.HTTP_BIND_CONTENT_SECURITY_POLICY_ENABLED.setValue(isCSPEnabled);
+                    if (cspValue == null || cspValue.trim().isEmpty()) {
+                        HttpBindManager.HTTP_BIND_CONTENT_SECURITY_POLICY_RESPONSEVALUE.setValue(null);
+                    } else {
+                        HttpBindManager.HTTP_BIND_CONTENT_SECURITY_POLICY_RESPONSEVALUE.setValue(cspValue.trim());
+                    }
+
+                    manager.getListener(ConnectionType.BOSH_C2S, true).setClientAuth(mutualAuthentication);
+                } catch (Exception e) {
+                    LoggerFactory.getLogger("http-bind.jsp").debug("An error has occurred configuring the HTTP binding ports.", e);
+                    errorMap.put("port", e.getMessage());
+                }
+                boolean isScriptSyntaxEnabled = ParamUtils.getBooleanParameter(request, "scriptSyntaxEnabled", serverManager.isScriptSyntaxEnabled());
+                serverManager.setScriptSyntaxEnabled(isScriptSyntaxEnabled);
             }
-            boolean isScriptSyntaxEnabled = ParamUtils.getBooleanParameter( request, "scriptSyntaxEnabled", serverManager.isScriptSyntaxEnabled() );
-            serverManager.setScriptSyntaxEnabled( isScriptSyntaxEnabled );
         }
         if ( errorMap.isEmpty() )
         {
@@ -157,6 +183,7 @@
     pageContext.setAttribute( "errors", errorMap );
     pageContext.setAttribute( "serverManager", serverManager );
     pageContext.setAttribute( "configuration", configuration );
+    pageContext.setAttribute("trustedProxies", HttpBindManager.HTTP_BIND_FORWARDED_TRUSTED_PROXIES.getValue() == null ? "" : String.join(", ", HttpBindManager.HTTP_BIND_FORWARDED_TRUSTED_PROXIES.getValue()));
 %>
 
 <html>
@@ -177,10 +204,12 @@
             $("rb07").disabled = !enabled;
             $("rb08").disabled = !enabled;
             $("CORSDomains").disabled = !enabled;
+            $("FHeader").disabled = !enabled;
             $("XFFHeader").disabled = !enabled;
             $("XFFServerHeader").disabled = !enabled;
             $("XFFHostHeader").disabled = !enabled;
             $("XFFHostName").disabled = !enabled;
+            $("XFFTrustedProxies").disabled = !enabled;
         };
         window.onload = setTimeout(setEnabled, 500);
     </script>
@@ -191,6 +220,7 @@
     <admin:infobox type="error">
         <c:choose>
             <c:when test="${err.key eq 'port'}"><fmt:message key="httpbind.settings.error.port"/></c:when>
+            <c:when test="${err.key eq 'trusted-proxy'}"><fmt:message key="httpbind.settings.xff.trusted-proxy.invalid-hint"><fmt:param><c:out value="${err.value}"/></fmt:param></fmt:message></c:when>
             <c:otherwise>
                 <c:if test="${not empty err.value}">
                     <fmt:message key="httpbind.settings.error.general"/>
@@ -345,6 +375,10 @@
                     <label for="rb07"><b><fmt:message key="httpbind.settings.xff.label_enable"/></b> - <fmt:message key="httpbind.settings.xff.label_enable_info"/></label>
                     <table>
                         <tr>
+                            <td><label for="FHeader"><fmt:message key="httpbind.settings.xff.forwarded"/></label></td>
+                            <td><input id="FHeader" type="text" size="40" name="FHeader" value="${fn:escapeXml(HttpBindManager.HTTP_BIND_FORWARDED_HEADER.value == null ? "" : HttpBindManager.HTTP_BIND_FORWARDED_HEADER.value)}"></td>
+                        </tr>
+                        <tr>
                             <td><label for="XFFHeader"><fmt:message key="httpbind.settings.xff.forwarded_for"/></label></td>
                             <td><input id="XFFHeader" type="text" size="40" name="XFFHeader" value="${fn:escapeXml(HttpBindManager.HTTP_BIND_FORWARDED_FOR.value == null ? "" : HttpBindManager.HTTP_BIND_FORWARDED_FOR.value)}"></td>
                         </tr>
@@ -359,6 +393,13 @@
                         <tr>
                             <td><label for="XFFHostName"><fmt:message key="httpbind.settings.xff.host_name"/></label></td>
                             <td><input id="XFFHostName" type="text" size="40" name="XFFHostName" value="${fn:escapeXml(HttpBindManager.HTTP_BIND_FORWARDED_HOST_NAME.value == null ? "" : HttpBindManager.HTTP_BIND_FORWARDED_HOST_NAME.value)}"></td>
+                        </tr>
+                        <tr>
+                            <td style="vertical-align: top"><label for="XFFTrustedProxies"><fmt:message key="httpbind.settings.xff.trusted_proxies"/></label></td>
+                            <td>
+                                <textarea id="XFFTrustedProxies" name="XFFTrustedProxies" cols="40" rows="3"><c:out value="${trustedProxies}"/></textarea>
+                                <div class="openfire-helpicon-with-tooltip"><span class="helpicon"></span><span class="tooltiptext"><fmt:message key="httpbind.settings.xff.trusted_proxies_help"/></span></div>
+                            </td>
                         </tr>
                     </table>
                 </td>

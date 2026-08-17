@@ -1,9 +1,5 @@
 CREATE TABLE ofUser (
   username              NVARCHAR(64)    NOT NULL,
-  storedKey             VARCHAR(32)     NULL,
-  serverKey             VARCHAR(32)     NULL,
-  salt                  VARCHAR(32)     NULL,
-  iterations            INTEGER         NULL,
   plainPassword         NVARCHAR(32)    NULL,
   encryptedPassword     NVARCHAR(255)   NULL,
   name                  NVARCHAR(100)   NULL,
@@ -14,6 +10,15 @@ CREATE TABLE ofUser (
 )
 CREATE INDEX ofUser_cDate_idx ON ofUser (creationDate ASC)
 
+CREATE TABLE ofUserScram (
+  username              NVARCHAR(64)    NOT NULL,
+  mechanism             VARCHAR(32)     NOT NULL,
+  storedKey             VARCHAR(255),
+  serverKey             VARCHAR(255),
+  salt                  VARCHAR(255),
+  iterations            INTEGER         NOT NULL,
+  CONSTRAINT ofUserScram_pk PRIMARY KEY (username, mechanism)
+)
 
 CREATE TABLE ofUserProp (
   username              NVARCHAR(64)    NOT NULL,
@@ -153,12 +158,6 @@ CREATE TABLE ofPrivacyList (
 )
 CREATE INDEX ofPrivacyList_default_idx ON ofPrivacyList (username, isDefault)
 
-CREATE TABLE ofSASLAuthorized (
-  username            NVARCHAR(64)   NOT NULL,
-  principal           NVARCHAR(4000) NOT NULL,
-  CONSTRAINT ofSASLAuthorized_pk PRIMARY KEY (username, principal)
-)
-
 CREATE TABLE ofSecurityAuditLog (
   msgID                 INTEGER         NOT NULL,
   username              NVARCHAR(64)    NOT NULL,
@@ -208,7 +207,9 @@ CREATE TABLE ofMucRoom (
   roomPassword        NVARCHAR(50)  NULL,
   canDiscoverJID      INT           NOT NULL,
   logEnabled          INT           NOT NULL,
-  subject             NVARCHAR(100) NULL,
+  retireOnDeletion    INT           NOT NULL,
+  preserveHistOnDel   INT           NOT NULL,
+  subject             TEXT          NULL,
   rolesToBroadcast    INT           NOT NULL,
   useReservedNick     INT           NOT NULL,
   canChangeNick       INT           NOT NULL,
@@ -228,6 +229,15 @@ CREATE TABLE ofMucRoomProp (
   name                  NVARCHAR(100)   NOT NULL,
   propValue             TEXT            NOT NULL,
   CONSTRAINT ofMucRoomProp_pk PRIMARY KEY (roomID, name)
+)
+
+CREATE TABLE ofMucRoomRetiree (
+  serviceID           INT           NOT NULL,
+  name                NVARCHAR(50)  NOT NULL,
+  alternateJID        NVARCHAR(2000),
+  reason              NVARCHAR(1024),
+  retiredAt           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT ofMucRoomRetiree_pk PRIMARY KEY (serviceID, name)
 )
 
 CREATE TABLE ofMucAffiliation (
@@ -381,11 +391,12 @@ INSERT INTO ofID (idType, id) VALUES (23, 1)
 INSERT INTO ofID (idType, id) VALUES (26, 2)
 INSERT INTO ofID (idType, id) VALUES (27, 1)
 
-INSERT INTO ofVersion (name, version) VALUES ('openfire', 34)
-
 /* Entry for admin user */
 INSERT INTO ofUser (username, plainPassword, name, email, creationDate, modificationDate)
     VALUES ('admin', 'admin', 'Administrator', 'admin@example.com', '0', '0')
 
 /* Entry for default conference service */
 INSERT INTO ofMucService (serviceID, subdomain, isHidden) VALUES (1, 'conference', 0)
+
+/* Do this last, as it is used by a continuous integration check to verify that the entire script was executed successfully. */
+INSERT INTO ofVersion (name, version) VALUES ('openfire', 40)

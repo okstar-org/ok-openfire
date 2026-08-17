@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -132,17 +132,17 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
 
         PropertyEventDispatcher.addListener(new PropertyEventListener() {
             @Override
-            public void propertySet(String property, Map params) {
+            public void propertySet(String property, Map<String, Object> params) {
                 if (property.equals("provider.roster.className")) {
                     initProvider();
                 }
             }
             @Override
-            public void propertyDeleted(String property, Map params) {}
+            public void propertyDeleted(String property, Map<String, Object> params) {}
             @Override
-            public void xmlPropertySet(String property, Map params) {}
+            public void xmlPropertySet(String property, Map<String, Object> params) {}
             @Override
-            public void xmlPropertyDeleted(String property, Map params) {}
+            public void xmlPropertyDeleted(String property, Map<String, Object> params) {}
         });
 
     }
@@ -172,6 +172,55 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
             }
         }
         return roster;
+    }
+
+    /**
+     * Returns local usernames that have one or more roster items on the specified remote domain.
+     *
+     * This method prefers provider-level optimized lookup when available. When not available,
+     * it falls back to scanning rosters.
+     *
+     * @param domain a remote domain.
+     * @return usernames that have roster usage on the specified domain.
+     */
+    public Collection<String> getUsernamesWithRosterItemsOnDomain(final String domain)
+    {
+        final String normalizedDomain;
+        try {
+            normalizedDomain = domain == null || domain.trim().isEmpty() ? "" : new JID(null, domain.trim(), null).getDomain();
+        } catch (IllegalArgumentException e) {
+            return Collections.emptySet();
+        }
+        if (normalizedDomain.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        final Set<String> result = new TreeSet<>();
+        try {
+            final Iterator<String> usernames = provider.getUsernamesByDomain(normalizedDomain);
+            while (usernames.hasNext()) {
+                result.add(usernames.next());
+            }
+            return result;
+        } catch (UnsupportedOperationException e) {
+            Log.debug("Roster provider {} does not support domain-targeted lookup. Falling back to roster scan.", provider.getClass().getName());
+        }
+
+        // Compatibility fallback for custom providers that don't implement domain-targeted lookup.
+        for (final String username : UserManager.getInstance().getUsernames()) {
+            try {
+                final Roster roster = getRoster(username);
+                for (final RosterItem rosterItem : roster.getRosterItems()) {
+                    if (normalizedDomain.equalsIgnoreCase(rosterItem.getJid().getDomain())) {
+                        result.add(username);
+                        break;
+                    }
+                }
+            } catch (Exception ignored) {
+                // Skip users that cannot be inspected.
+            }
+        }
+        return result;
     }
 
     /**
@@ -327,12 +376,12 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
     }
 
     @Override
-    public void groupCreated(Group group, Map params) {
+    public void groupCreated(Group group, Map<String, ?> params) {
         //Do nothing
     }
 
     @Override
-    public void groupDeleting(Group group, Map params) {
+    public void groupDeleting(Group group, Map<String, ?> params) {
         // Get group members
         Collection<JID> users = new HashSet<>(group.getMembers());
         users.addAll(group.getAdmins());
@@ -345,7 +394,7 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
     }
 
     @Override
-    public void groupModified(final Group group, Map params) {
+    public void groupModified(final Group group, Map<String, ?> params) {
         // Do nothing if no group property has been modified
         if ("propertyDeleted".equals(params.get("type"))) {
              return;
@@ -370,23 +419,19 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
             // Simulate that the group users has been added to the group. This will cause to push
             // roster items to the "affected" users for the group users
 
-            executor.submit(new Callable<Boolean>()
-            {
-                public Boolean call() throws Exception
-                {
-                    // Remove the group members from the affected rosters
-                    for (JID deletedUser : users) {
-                        groupUserDeleted(group, affectedUsers, deletedUser);
-                    }
-
-                    // Simulate that the group users has been added to the group. This will cause to push
-                    // roster items to the "affected" users for the group users
-
-                    for (JID user : users) {
-                        groupUserAdded(group, user);
-                    }
-                    return true;
+            executor.submit(() -> {
+                // Remove the group members from the affected rosters
+                for (JID deletedUser : users) {
+                    groupUserDeleted(group, affectedUsers, deletedUser);
                 }
+
+                // Simulate that the group users has been added to the group. This will cause to push
+                // roster items to the "affected" users for the group users
+
+                for (JID user : users) {
+                    groupUserAdded(group, user);
+                }
+                return true;
             });
         }
         else if (Group.SHARED_ROSTER_GROUP_LIST_PROPERTY_KEY.equals(keyChanged)) {
@@ -402,24 +447,20 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
             final Collection<JID> affectedUsers = getAffectedUsers(group,
                     group.getSharedWith(), parseGroupNames(originalValue));
 
-            executor.submit(new Callable<Boolean>()
-            {
-                public Boolean call() throws Exception
-                {
-                    // Remove the group members from the affected rosters
+            executor.submit(() -> {
+                // Remove the group members from the affected rosters
 
-                    for (JID deletedUser : users) {
-                        groupUserDeleted(group, affectedUsers, deletedUser);
-                    }
-
-                    // Simulate that the group users has been added to the group. This will cause to push
-                    // roster items to the "affected" users for the group users
-
-                    for (JID user : users) {
-                        groupUserAdded(group, user);
-                    }
-                    return true;
+                for (JID deletedUser : users) {
+                    groupUserDeleted(group, affectedUsers, deletedUser);
                 }
+
+                // Simulate that the group users has been added to the group. This will cause to push
+                // roster items to the "affected" users for the group users
+
+                for (JID user : users) {
+                    groupUserAdded(group, user);
+                }
+                return true;
             });
         }
         else if (Group.SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY.equals(keyChanged)) {
@@ -429,7 +470,7 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
                 return;
             }
             // Do nothing if the group is not being shown in users' rosters
-            if (!isSharedGroup(group)) {
+            if (!group.isShared()) {
                 return;
             }
             // Get all the affected users
@@ -496,9 +537,11 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
      *
      * @param group the group to check if it may be considered a shared group.
      * @return true if the specified Group may be included in a user roster.
+     * @deprecated Replaced by {@link Group#isShared()}
      */
+    @Deprecated(forRemoval = true, since = "5.0.3") // Remove in or after Openfire 5.2.0
     public static boolean isSharedGroup(Group group) {
-        return SharedGroupVisibility.everybody == group.getSharedWith() || SharedGroupVisibility.usersOfGroups == group.getSharedWith();
+        return group.isShared();
     }
 
     /**
@@ -513,13 +556,13 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
     }
 
     @Override
-    public void memberAdded(Group group, Map params) {
+    public void memberAdded(Group group, Map<String, ?> params) {
         JID addedUser = new JID((String) params.get("member"));
         // Do nothing if the user was an admin that became a member
         if (group.getAdmins().contains(addedUser)) {
             return;
         }
-        if (!isSharedGroup(group)) {
+        if (!group.isShared()) {
             for (Group visibleGroup : getVisibleGroups(group)) {
                 // Get the list of affected users
                 Collection<JID> users = new HashSet<>(visibleGroup.getMembers());
@@ -533,7 +576,7 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
     }
 
     @Override
-    public void memberRemoved(Group group, Map params) {
+    public void memberRemoved(Group group, Map<String, ?> params) {
         String member = (String) params.get("member");
         if (member == null) {
             return;
@@ -543,7 +586,7 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
         if (group.getAdmins().contains(deletedUser)) {
             return;
         }
-        if (!isSharedGroup(group)) {
+        if (!group.isShared()) {
             for (Group visibleGroup : getVisibleGroups(group)) {
                 // Get the list of affected users
                 Collection<JID> users = new HashSet<>(visibleGroup.getMembers());
@@ -557,13 +600,13 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
     }
 
     @Override
-    public void adminAdded(Group group, Map params) {
+    public void adminAdded(Group group, Map<String, ?> params) {
         JID addedUser = new JID((String) params.get("admin"));
         // Do nothing if the user was a member that became an admin
         if (group.getMembers().contains(addedUser)) {
             return;
         }
-        if (!isSharedGroup(group)) {
+        if (!group.isShared()) {
             for (Group visibleGroup : getVisibleGroups(group)) {
                 // Get the list of affected users
                 Collection<JID> users = new HashSet<>(visibleGroup.getMembers());
@@ -577,14 +620,14 @@ public class RosterManager extends BasicModule implements GroupEventListener, Us
     }
 
     @Override
-    public void adminRemoved(Group group, Map params) {
+    public void adminRemoved(Group group, Map<String, ?> params) {
         JID deletedUser = new JID((String) params.get("admin"));
         // Do nothing if the user is still a member
         if (group.getMembers().contains(deletedUser)) {
             return;
         }
         // Do nothing if the group is not being shown in group members' rosters
-        if (!isSharedGroup(group)) {
+        if (!group.isShared()) {
             for (Group visibleGroup : getVisibleGroups(group)) {
                 // Get the list of affected users
                 Collection<JID> users = new HashSet<>(visibleGroup.getMembers());

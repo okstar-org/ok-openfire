@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -254,25 +254,23 @@ public class OfflineMessageStrategy extends BasicModule implements ServerFeature
         JiveGlobals.migrateProperty("xmpp.offline.type");
 
         String quota = JiveGlobals.getProperty("xmpp.offline.quota");
-        if (quota != null && quota.length() > 0) {
+        if (quota != null && !quota.isEmpty()) {
             OfflineMessageStrategy.quota = Integer.parseInt(quota);
         }
         String type = JiveGlobals.getProperty("xmpp.offline.type");
-        if (type != null && type.length() > 0) {
+        if (type != null && !type.isEmpty()) {
             OfflineMessageStrategy.type = Type.valueOf(type);
         }
     }
 
     @Override
     public Iterator<String> getFeatures() {
-        switch (type) {
-            case store:
-            case store_and_bounce:
-            case store_and_drop:
+        return switch (type) {
+            case store, store_and_bounce, store_and_drop ->
                 // http://xmpp.org/extensions/xep-0160.html#disco
-                return Collections.singleton("msgoffline").iterator();
-        }
-        return Collections.emptyIterator();
+                Collections.singleton("msgoffline").iterator();
+            default -> Collections.emptyIterator();
+        };
     }
 
     /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2026 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ import org.jivesoftware.openfire.roster.RosterManager;
 import org.jivesoftware.openfire.streammanagement.StreamManager;
 import org.jivesoftware.openfire.user.PresenceEventDispatcher;
 import org.jivesoftware.openfire.user.UserNotFoundException;
+import org.jivesoftware.util.IpUtils;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.LocaleUtils;
 import org.jivesoftware.util.StringUtils;
@@ -43,10 +44,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
-import org.xmpp.packet.JID;
-import org.xmpp.packet.Packet;
-import org.xmpp.packet.Presence;
-import org.xmpp.packet.StreamError;
+import org.xmpp.packet.*;
 
 import javax.annotation.Nonnull;
 import java.net.UnknownHostException;
@@ -293,11 +291,6 @@ public class LocalClientSession extends LocalSession implements ClientSession {
             } catch (KeyStoreException e) {
                 Log.warn("Unable to access the identity store for client connections. StartTLS is not being offered as a feature for this session.", e);
             }
-            // Include available SASL Mechanisms
-            final Element saslMechanisms = SASLAuthentication.getSASLMechanisms(session);
-            if (saslMechanisms != null) {
-                features.add(saslMechanisms);
-            }
             // Include Stream features
             final List<Element> specificFeatures = session.getAvailableStreamFeatures();
             if (specificFeatures != null) {
@@ -315,16 +308,15 @@ public class LocalClientSession extends LocalSession implements ClientSession {
     {
         try
         {
-            final String hostAddress = connection.getHostAddress();
             final byte[] address = connection.getAddress();
 
             // Blacklist takes precedence over whitelist.
-            if ( blockedIPs.contains( hostAddress ) || isAddressInRange( address, blockedIPs ) ) {
+            if (IpUtils.isAddressInAnyOf(address, blockedIPs)) {
                 return false;
             }
 
             // When there's a whitelist (not empty), you must be on it to be allowed.
-            return allowedIPs.isEmpty() || allowedIPs.contains( hostAddress ) || isAddressInRange( address, allowedIPs );
+            return allowedIPs.isEmpty() || IpUtils.isAddressInAnyOf(address, allowedIPs);
         }
         catch ( UnknownHostException e )
         {
@@ -336,30 +328,20 @@ public class LocalClientSession extends LocalSession implements ClientSession {
     {
         try
         {
-            final String hostAddress = connection.getHostAddress();
             final byte[] address = connection.getAddress();
 
             // Blacklist takes precedence over whitelist.
-            if ( blockedIPs.contains( hostAddress ) || isAddressInRange( address, blockedIPs ) ) {
+            if (IpUtils.isAddressInAnyOf(address, blockedIPs)) {
                 return false;
             }
 
             // When there's a whitelist (not empty), you must be on it to be allowed.
-            return allowedAnonymIPs.isEmpty() || allowedAnonymIPs.contains( hostAddress ) || isAddressInRange( address, allowedAnonymIPs );
+            return allowedAnonymIPs.isEmpty() || IpUtils.isAddressInAnyOf(address, allowedAnonymIPs);
         }
         catch ( UnknownHostException e )
         {
             return false;
         }
-    }
-
-    // TODO Add IPv6 support (OF-2785)
-    public static boolean isAddressInRange( byte[] address, Set<String> ranges ) {
-        final String range0 = (address[0] & 0xff) + "." + (address[1] & 0xff) + "." + (address[2] & 0xff) + "." + (address[3] & 0xff);
-        final String range1 = (address[0] & 0xff) + "." + (address[1] & 0xff) + "." + (address[2] & 0xff) + ".*";
-        final String range2 = (address[0] & 0xff) + "." + (address[1] & 0xff) + ".*.*";
-        final String range3 = (address[0] & 0xff) + ".*.*.*";
-        return ranges.contains(range0) || ranges.contains(range1) || ranges.contains(range2) || ranges.contains(range3);
     }
 
     /**
@@ -556,7 +538,7 @@ public class LocalClientSession extends LocalSession implements ClientSession {
 
     /**
      * Sets the new Authorization Token for this session. The session is not yet considered fully
-     * authenticated (i.e. active) since a resource has not been binded at this point. This
+     * authenticated (i.e. active) since a resource has not been bound at this point. This
      * message will be sent after SASL authentication was successful but yet resource binding
      * is required.
      *
@@ -608,13 +590,35 @@ public class LocalClientSession extends LocalSession implements ClientSession {
      * authenticated (obtaining managers for example).
      */
     public void setAnonymousAuth() {
-        // Anonymous users have a full JID. Use the random resource as the JID's node
-        String resource = getAddress().getResource();
-        setAddress(new JID(resource, getServerName(), resource, true));
+        final String anonymousUsername = getAnonymousUsernameUnguarded();
+        setAddress(new JID(anonymousUsername, getServerName(), getAddress().getResource(), true));
         setStatus(Session.Status.AUTHENTICATED);
-        authToken = AuthToken.generateAnonymousToken();
+        authToken = AuthToken.generateAnonymousToken(); // AuthToken _should_ already be set, but defensively overwrite it.
         // Add session to the session manager. The session will be added to the routing table as well
         sessionManager.addSession(this);
+    }
+
+    /**
+     * Get the username used if this were anonymous
+     * Use with care, this is only valid prior to binding.
+     *
+     * @return a username when this session is to be used after anonymous authentication
+     * @throws IllegalStateException when invoked after the session is bound.
+     */
+    public String getAnonymousUsername() {
+        if (getStatus() == Session.Status.AUTHENTICATED) { // This is set at bind, not at SASL success, which is why this confusingly works correctly as a gate.
+            throw new IllegalStateException("Anonymous username is only valid prior to binding.");
+        }
+        return getAnonymousUsernameUnguarded();
+    }
+
+    /**
+     * Unguarded accessor, safe to use during the transition to an authenticated state.
+     */
+    @Nonnull
+    private String getAnonymousUsernameUnguarded() {
+        // Anonymous users have a full JID. Use the random resource as the JID's node.
+        return getAddress().getResource();
     }
 
     /**
@@ -639,7 +643,7 @@ public class LocalClientSession extends LocalSession implements ClientSession {
      * and presence statuses to the client. Initialization occurs only once
      * following the first available presence transition.
      *
-     * @return True if the session has already been initializsed
+     * @return True if the session has already been initialized
      */
     @Override
     public boolean isInitialized() {
@@ -824,6 +828,9 @@ public class LocalClientSession extends LocalSession implements ClientSession {
         }
 
         if (getAuthToken() == null) {
+            // Include available SASL Mechanisms
+            result.addAll(SASLAuthentication.getSASLMechanisms(this));
+            SASLAuthentication.appendChannelBindingCapabilityIfNeeded(result);
             // Advertise that the server supports Non-SASL Authentication
             if ( XMPPServer.getInstance().getIQRouter().supports( "jabber:iq:auth" ) ) {
                 result.add(DocumentHelper.createElement(QName.get("auth", "http://jabber.org/features/iq-auth")));
@@ -921,42 +928,97 @@ public class LocalClientSession extends LocalSession implements ClientSession {
      * default list is going to be used. If no default list was defined for this user then
      * allow the packet to flow.
      *
-     * @param packet the packet to analyze if it must be blocked.
+     * @param stanza the packet to analyze if it must be blocked.
      * @return true if the specified packet must *not* be blocked.
      */
     @Override
-    public boolean canProcess(Packet packet) {
-
+    public boolean canDeliver(@Nonnull final Packet stanza)
+    {
+        final boolean result;
         PrivacyList list = getActiveList();
         if (list != null) {
             // If a privacy list is active then make sure that the packet is not blocked
-            return !list.shouldBlockPacket(packet);
+            result = !list.shouldBlockPacket(stanza);
         }
         else {
             list = getDefaultList();
             // There is no active list so check if there exists a default list and make
             // sure that the packet is not blocked
-            return list == null || !list.shouldBlockPacket(packet);
+            result = list == null || !list.shouldBlockPacket(stanza);
+        }
+
+        if (!result) {
+            returnPrivacyListErrorToSender(stanza);
+        }
+        return result;
+    }
+
+    static void returnPrivacyListErrorToSender(Packet packet) {
+        // http://xmpp.org/extensions/xep-0016.html#protocol-error
+        if (packet instanceof Message) {
+            // For message stanzas, the server SHOULD return an error, which SHOULD be <service-unavailable/>.
+            if (((Message)packet).getType() == Message.Type.error){
+                Log.debug("Avoid generating an error in response to a stanza that itself is an error (to avoid the chance of entering an endless back-and-forth of exchanging errors). Suppress sending an {} error in response to: {}", PacketError.Condition.service_unavailable, packet);
+                return;
+            }
+            final Message message = (Message) packet;
+            Message result = message.createCopy();
+            result.setTo(message.getFrom());
+            result.setFrom(message.getTo());
+            result.setError(PacketError.Condition.service_unavailable);
+            Log.trace("Responding with 'service-unavailable' as message cannot be processed to: {}", packet);
+            XMPPServer.getInstance().getPacketRouter().route(result);
+        } else if (packet instanceof IQ) {
+            // For IQ stanzas of type "get" or "set", the server MUST return an error, which SHOULD be <service-unavailable/>.
+            // IQ stanzas of other types MUST be silently dropped by the server.
+            final IQ iq = (IQ) packet;
+            if (iq.getType() == IQ.Type.get || iq.getType() == IQ.Type.set) {
+                Log.trace("Responding with 'service-unavailable' as IQ request cannot be processed to: {}", packet);
+                IQ result = IQ.createResultIQ(iq);
+                result.setError(PacketError.Condition.service_unavailable);
+                XMPPServer.getInstance().getPacketRouter().route(result);
+            }
         }
     }
 
     @Override
-    public void deliver(Packet queueOrPushStanza) throws UnauthorizedException {
-        // Queue this stanza, possibly returning it immediately in line with any previously queued stanzas if this
-        // stanza needs to be pushed to the client immediately.
-        final List<Packet> stanzasToPush = csiManager.queueOrPush(queueOrPushStanza);
+    public void deliver(Packet queueOrPushStanza) throws UnauthorizedException
+    {
+        pushPackets(csiManager.queueOrPush(queueOrPushStanza));
+    }
 
+    /**
+     * Delivers stanzas to the client, without evaluating CSI.
+     *
+     * This method should generally not be used, as it is designed to be used by the CSI implementation specifically.
+     * Prefer using {@link #deliver(Packet)} instead.
+     *
+     * @param stanzasToPush The stanzas to deliver
+     */
+    public void pushPackets(@Nonnull final List<Packet> stanzasToPush) throws UnauthorizedException
+    {
         if (stanzasToPush.isEmpty()) {
             return;
         }
-        synchronized (streamManager)
-        {
+
+        // When stream management is enabled, deliver and record stanzas under a mutex. If it's not enabled, don't
+        // acquire the lock to reduce lock contention (OF-2921).
+        if (!streamManager.isEnabled()) {
             // Push stanzas to the client.
             for (final Packet stanzaToPush : stanzasToPush) {
                 if (conn != null) {
                     conn.deliver(stanzaToPush);
                 }
-                streamManager.sentStanza(stanzaToPush);
+            }
+        } else {
+            synchronized (streamManager) {
+                // Push stanzas to the client.
+                for (final Packet stanzaToPush : stanzasToPush) {
+                    if (conn != null) {
+                        conn.deliver(stanzaToPush);
+                    }
+                    streamManager.sentStanza(stanzaToPush);
+                }
             }
         }
     }
@@ -982,7 +1044,7 @@ public class LocalClientSession extends LocalSession implements ClientSession {
             ", isInitialized=" + initialized +
             ", hasAuthToken=" + (authToken != null) +
             ", peer address='" + peerAddress +'\'' +
-            ", presence='" + presence.toString() + '\'' +
+            ", presence='" + presence.toXML() + '\'' +
             '}';
     }
 }

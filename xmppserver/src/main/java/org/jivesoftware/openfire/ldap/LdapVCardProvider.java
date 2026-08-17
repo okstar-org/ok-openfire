@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2024 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -249,10 +249,7 @@ public class LdapVCardProvider implements VCardProvider, PropertyEventListener {
             Element avatarElement = loadAvatarFromDatabase(username);
             if (avatarElement != null) {
                 Log.debug("LdapVCardProvider: Adding avatar element from local storage");
-                Element currentElement = vcard.element("PHOTO");
-                if (currentElement != null) {
-                    vcard.remove(currentElement);
-                }
+                vcard.elements("PHOTO").forEach(vcard::remove);
                 vcard.add(avatarElement);
             }
         }
@@ -302,10 +299,7 @@ public class LdapVCardProvider implements VCardProvider, PropertyEventListener {
             return vcard;
         }
         Log.debug("LdapVCardProvider: Merging avatar element from passed vcard");
-        Element currentElement = vcard.element("PHOTO");
-        if (currentElement != null) {
-            vcard.remove(currentElement);
-        }
+        vcard.elements("PHOTO").forEach(vcard::remove);
         vcard.add(photoElement);
         return vcard;
     }
@@ -457,7 +451,7 @@ public class LdapVCardProvider implements VCardProvider, PropertyEventListener {
     }
 
     @Override
-    public void propertySet(String property, Map params) {
+    public void propertySet(String property, Map<String, Object> params) {
         if ("ldap.vcard-mapping".equals(property)) {
             initTemplate();
             // Reset cache of vCards
@@ -466,17 +460,17 @@ public class LdapVCardProvider implements VCardProvider, PropertyEventListener {
     }
 
     @Override
-    public void propertyDeleted(String property, Map params) {
+    public void propertyDeleted(String property, Map<String, Object> params) {
         //Ignore
     }
 
     @Override
-    public void xmlPropertySet(String property, Map params) {
+    public void xmlPropertySet(String property, Map<String, Object> params) {
         //Ignore
     }
 
     @Override
-    public void xmlPropertyDeleted(String property, Map params) {
+    public void xmlPropertyDeleted(String property, Map<String, Object> params) {
         //Ignore
     }
 
@@ -545,7 +539,7 @@ public class LdapVCardProvider implements VCardProvider, PropertyEventListener {
         private Element treeWalk(Element rootElement, Map<String, String> map) {
             for ( final Element element : rootElement.elements() ) {
                 String elementText = element.getTextTrim();
-                if (elementText != null && !"".equals(elementText)) {
+                if (elementText != null && !elementText.isEmpty()) {
                     String format = element.getStringValue();
 
                     // A map that will hold all replacements for placeholders

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -92,20 +92,20 @@ public class POP3AuthProvider implements AuthProvider {
         JiveGlobals.migrateProperty("pop3.domain");
         JiveGlobals.migrateProperty("pop3.port");
 
-        if (Boolean.valueOf(JiveGlobals.getProperty("pop3.authCache.enabled"))) {
+        if (Boolean.parseBoolean(JiveGlobals.getProperty("pop3.authCache.enabled"))) {
             String cacheName = "POP3 Authentication";
             authCache = CacheFactory.createCache(cacheName);
         }
 
-        useSSL = Boolean.valueOf(JiveGlobals.getProperty("pop3.ssl"));
-        authRequiresDomain = Boolean.valueOf(JiveGlobals.getProperty("pop3.authRequiresDomain"));
+        useSSL = Boolean.parseBoolean(JiveGlobals.getProperty("pop3.ssl"));
+        authRequiresDomain = Boolean.parseBoolean(JiveGlobals.getProperty("pop3.authRequiresDomain"));
 
         host = JiveGlobals.getProperty("pop3.host");
-        if (host == null || host.length() < 1) {
+        if (host == null || host.isEmpty()) {
             throw new IllegalArgumentException("pop3.host is null or empty");
         }
 
-        debugEnabled = Boolean.valueOf(JiveGlobals.getProperty("pop3.debug"));
+        debugEnabled = Boolean.parseBoolean(JiveGlobals.getProperty("pop3.debug"));
 
         domain = JiveGlobals.getProperty("pop3.domain");
 

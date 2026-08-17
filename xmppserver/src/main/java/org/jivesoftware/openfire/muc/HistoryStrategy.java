@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software, 2016-2022 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2016-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -88,7 +88,9 @@ public class HistoryStrategy implements Externalizable {
 
     /**
      * Track the latest room subject change or null if none exists yet.
+     * @deprecated Since Openfire 5.1.0, a room's subject is managed by {@link MUCRoom} directly.
      */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
     private Message roomSubject = null;
 
     /**
@@ -258,7 +260,7 @@ public class HistoryStrategy implements Externalizable {
         if (!MUC_HISTORY_CACHE.containsKey(roomJID)) {
             try {
                 final MUCRoom room = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatService(roomJID).getChatRoom(roomJID.getNode());
-                MUCPersistenceManager.loadHistory(room, getMaxNumber());
+                MUCPersistenceManager.loadHistory(room);
             } catch (Exception e) {
                 Log.error("Unable to load history for room {} from database.", roomJID, e);
             }
@@ -418,7 +420,7 @@ public class HistoryStrategy implements Externalizable {
         this.contextPrefix = prefix;
         setTypeFromString(MUCPersistenceManager.getProperty(subdomain, prefix + ".type"));
         String maxNumberString = MUCPersistenceManager.getProperty(subdomain, prefix + ".maxNumber");
-        if (maxNumberString != null && maxNumberString.trim().length() > 0){
+        if (maxNumberString != null && !maxNumberString.trim().isEmpty()){
             try {
                 this.maxNumber = Integer.parseInt(maxNumberString);
             }
@@ -434,7 +436,9 @@ public class HistoryStrategy implements Externalizable {
      *
      * @return true if there is a message within the history of the room that has changed the
      *         room's subject.
+     * @deprecated Since Openfire 5.1.0, a room's subject is managed by {@link MUCRoom} directly.
      */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
     public boolean hasChangedSubject() {
         return roomSubject != null;
     }
@@ -444,7 +448,9 @@ public class HistoryStrategy implements Externalizable {
      * room's subject.
      * 
      * @return the latest room subject change or null if none exists yet.
+     * @deprecated Since Openfire 5.1.0, a room's subject is managed by {@link MUCRoom} directly.
      */
+    @Deprecated(forRemoval = true) // Remove in or after Openfire 5.2.0
     @Nullable
     public Message getChangedSubject() {
         return roomSubject;
