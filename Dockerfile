@@ -1,7 +1,17 @@
+# Image mirror used to fetch the base images (e.g. a China registry mirror).
+# Override at build time, e.g. to pull straight from Docker Hub:
+#   docker build --build-arg MIRROR= ...
+ARG MIRROR=swr.cn-north-4.myhuaweicloud.com
+
+# Registry prefix for all base images (includes the library namespace).
+# Derives from MIRROR unless overridden explicitly, e.g. to build against Docker Hub directly:
+#   docker build --build-arg OPENFIRE_BASE_IMAGE=library ...
+ARG OPENFIRE_BASE_IMAGE=${MIRROR}/ddn-k8s/docker.io/library
+
 # This stage extracts all the pom.xml files.
 # It'll get rebuilt with any source change, but that's OK.
 # It doesn't matter what image we're using, really, so we may as well use one of the same images as elsewhere.
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/eclipse-temurin:11-jdk AS poms
+FROM ${OPENFIRE_BASE_IMAGE}/eclipse-temurin:17-jdk AS poms
 LABEL maintainer="cto@chuanshaninfo.com"
 WORKDIR /usr/src
 COPY . .
@@ -11,7 +21,7 @@ RUN find . -type f -and \! -name pom.xml -and \! -name '*.jar' -delete
 RUN find . -type d -empty -delete
 
 # Now we build:
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/eclipse-temurin:17 AS build
+FROM ${OPENFIRE_BASE_IMAGE}/eclipse-temurin:17-jdk AS build
 WORKDIR /tmp/
 WORKDIR /usr/src
 COPY mvnw ./
@@ -43,19 +53,21 @@ RUN sed -i 's/\r//g' /usr/src/distribution/target/distribution-base/bin/openfire
 
 # Might as well create the user in a different stage if only to eliminate
 # the ugly && chaining and increase parallelization
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/eclipse-temurin:17-jre AS skeleton-runtime
+FROM ${OPENFIRE_BASE_IMAGE}/eclipse-temurin:17-jre AS skeleton-runtime
 
 ENV OPENFIRE_USER=openfire \
     OPENFIRE_DIR=/usr/local/openfire \
-    OPENFIRE_DATA_DIR=/home/openfire \
+    OPENFIRE_DATA_DIR=/var/lib/openfire \
     OPENFIRE_LOG_DIR=/var/log/openfire
 
 RUN apt-get update -qq
 RUN apt-get install -yyq adduser
 RUN adduser --disabled-password --quiet --system --home $OPENFIRE_DATA_DIR --gecos "Openfire XMPP server" --group $OPENFIRE_USER
+# Ensure the data directory exists here so the runtime stage can COPY it with the right ownership.
+RUN mkdir -p ${OPENFIRE_DATA_DIR} && chown ${OPENFIRE_USER}:${OPENFIRE_USER} ${OPENFIRE_DATA_DIR}
 
 # Final stage, build the runtime container:
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/eclipse-temurin:17-jre AS runtime
+FROM ${OPENFIRE_BASE_IMAGE}/eclipse-temurin:17-jre AS runtime
 
 ENV OPENFIRE_USER=openfire \
     OPENFIRE_DIR=/usr/local/openfire \
@@ -64,9 +76,10 @@ ENV OPENFIRE_USER=openfire \
 
 COPY --from=skeleton-runtime /etc/passwd /etc/shadow /etc/group /etc/
 COPY --chown=$OPENFIRE_USER:$OPENFIRE_USER --from=skeleton-runtime $OPENFIRE_DATA_DIR $OPENFIRE_DATA_DIR
-COPY --chmod=0755 --from=build /usr/src/build/docker/entrypoint.sh /sbin/entrypoint.sh
+COPY --from=build /usr/src/build/docker/entrypoint.sh /sbin/entrypoint.sh
 COPY --chown=$OPENFIRE_USER:$OPENFIRE_USER --from=build /usr/src/distribution/target/distribution-base /usr/local/openfire
-RUN mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org \
+RUN chmod 0755 /sbin/entrypoint.sh \
+    && mv ${OPENFIRE_DIR}/conf ${OPENFIRE_DIR}/conf_org \
     && mv ${OPENFIRE_DIR}/plugins ${OPENFIRE_DIR}/plugins_org \
     && mv ${OPENFIRE_DIR}/resources/security ${OPENFIRE_DIR}/resources/security_org
 
